@@ -93,7 +93,7 @@ func TestIngestDedupesSeenContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlite: %v", err)
 	}
-	defer sqlite.Close()
+	defer func() { _ = sqlite.Close() }()
 
 	dest := afero.NewMemMapFs()
 	p := newTestPipeline(dest, sqlite)

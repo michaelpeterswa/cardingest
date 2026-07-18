@@ -13,7 +13,7 @@ func TestSQLiteSeenMarkVerified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	seen, err := s.Seen(ctx, "deadbeef")
 	if err != nil {
@@ -59,7 +59,7 @@ func TestSQLitePersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	seen, err := s2.Seen(ctx, "abc123")
 	if err != nil {
 		t.Fatalf("seen: %v", err)

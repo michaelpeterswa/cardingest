@@ -122,7 +122,7 @@ func TestIngestMockEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlite: %v", err)
 	}
-	defer sqlite.Close()
+	defer func() { _ = sqlite.Close() }()
 
 	pipe := pipeline.New(pipeline.Deps{
 		Dest:       dest,
