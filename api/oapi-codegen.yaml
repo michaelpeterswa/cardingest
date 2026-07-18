@@ -1,3 +1,4 @@
+---
 # oapi-codegen configuration. Regenerate with `make generate`.
 package: api
 # Path is relative to the directory `go generate` runs in (internal/web).

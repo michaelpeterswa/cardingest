@@ -85,7 +85,7 @@ func run(ctx context.Context, c *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("init detector: %w", err)
 	}
-	defer det.Close()
+	defer func() { _ = det.Close() }()
 
 	mnt, err := mounter.New(mounter.Config{Mock: mock, MountRoot: c.MountRoot}, log)
 	if err != nil {

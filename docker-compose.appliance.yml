@@ -1,7 +1,7 @@
 ---
 # Production appliance deployment. Runs the real Linux detector + mounter.
 # The host mounts the NAS share and bind-mounts it in; /dev is bound whole so
-# hotplugged card device nodes (which don't exist at container start) are visible.
+# hotplugged card device nodes (absent at container start) must be visible.
 services:
   cardingest:
     image: cardingest:latest

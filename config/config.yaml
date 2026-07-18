@@ -1,0 +1,47 @@
+---
+# cardingest ingest policy. Hot-editable (the web UI round-trips this file).
+# Bootstrap settings (READER_MODE, paths, ports) come from env, not here.
+
+destination:
+  path: /data/dest              # bind-mounted NAS share
+  layout: "{category}/{date}"   # -> photos/2026-07-18/DSC01234.ARW
+  date_source: exif_then_mtime
+
+categories:
+  photos: [".arw", ".dng", ".jpg", ".jpeg"]
+  video: [".mp4", ".mov"]
+  other: ["*"]                  # catch-all; omit to skip unknowns
+
+rules:                          # ordered, first match wins
+  - name: skip thumbnails
+    match:
+      ext: [".thm"]
+      path_glob: "**/THMBNL/**"
+    action: skip
+  - name: skip tiny files
+    match:
+      max_size: 100KB
+    action: skip
+  - name: keep media
+    match:
+      ext: [".arw", ".dng", ".jpg", ".mp4", ".mov"]
+    action: keep
+  - default: skip
+
+card:
+  erase_ingested: true
+  erase_skipped: false          # opt-in; off to avoid rule-typo data loss
+  eject_when_done: true
+
+reader:
+  # Lexar RW530 dual-slot reader. Each slot is a separate USB mass-storage
+  # bridge, so both VID:PIDs are allowlisted. Confirm on the appliance with
+  # lsusb / sysfs once a card is inserted.
+  usb_ids:
+    - "05e3:0764"               # SD slot (Genesys bridge)
+    - "174c:2362"               # CFexpress slot (ASMedia bridge, UAS)
+
+notify:
+  - type: ntfy
+    url: https://ntfy.example/ingest
+    "on": [complete, error]
