@@ -48,3 +48,43 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("card policy round-trip failed: %+v", got.Card)
 	}
 }
+
+func TestStoreRulesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	want := File{
+		Rules: []Rule{
+			{Name: "skip thumbnails", Action: "skip", Match: &RuleMatch{
+				Ext: []string{".thm"}, PathGlob: "**/THMBNL/**"}},
+			{Name: "skip tiny", Action: "skip", Match: &RuleMatch{MaxSize: "100KB"}},
+			{Name: "keep media", Action: "keep", Match: &RuleMatch{Ext: []string{".arw"}}},
+			{Default: "skip"},
+		},
+	}
+	if err := s.Save(want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := s2.Get().Rules
+	if len(got) != 4 {
+		t.Fatalf("rules len = %d, want 4", len(got))
+	}
+	if got[0].Name != "skip thumbnails" || got[0].Match == nil ||
+		got[0].Match.PathGlob != "**/THMBNL/**" || got[0].Match.Ext[0] != ".thm" {
+		t.Fatalf("rule 0 round-trip failed: %+v", got[0])
+	}
+	if got[1].Match.MaxSize != "100KB" {
+		t.Fatalf("rule 1 max_size = %q", got[1].Match.MaxSize)
+	}
+	if got[3].Default != "skip" {
+		t.Fatalf("default entry round-trip failed: %+v", got[3])
+	}
+}

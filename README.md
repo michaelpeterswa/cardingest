@@ -7,11 +7,11 @@ by reading it back, then erases the ingested originals from the card.
 
 See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full specification.
 
-> **Status:** Milestone 2 — the copy → verify (NAS read-back) → erase pipeline
-> with a SQLite hash index for idempotent resume/dedupe, on top of the M1
-> `detect` + `mounter` core. The rules engine (currently keep-all + category
-> foldering), real EXIF/MP4 dating, notifications, and web UI land in later
-> milestones.
+> **Status:** Milestone 3 — the ordered keep/skip rules engine (`ext`,
+> `path_glob`, `min`/`max_size`, first-match-wins with a `default`), driven by
+> the YAML config, on top of the M2 copy → verify → erase pipeline and its
+> SQLite idempotence. Real EXIF/MP4 dating, notifications, and the web UI land
+> in later milestones.
 
 ## How it runs
 
