@@ -22,6 +22,7 @@ import (
 	"github.com/michaelpeterswa/cardingest/internal/mounter"
 	"github.com/michaelpeterswa/cardingest/internal/notify"
 	"github.com/michaelpeterswa/cardingest/internal/pipeline"
+	"github.com/michaelpeterswa/cardingest/internal/rules"
 	"github.com/michaelpeterswa/cardingest/internal/store"
 	"github.com/michaelpeterswa/cardingest/internal/web"
 	"github.com/spf13/afero"
@@ -114,9 +115,16 @@ func run(ctx context.Context, c *config.Config) error {
 	}
 	destFS := afero.NewBasePathFs(afero.NewOsFs(), destPath)
 
+	// Compile the ordered keep/skip rules from the policy config.
+	ruleEngine, err := rules.Compile(policy.Rules)
+	if err != nil {
+		return fmt.Errorf("compile rules: %w", err)
+	}
+
 	pipe := pipeline.New(pipeline.Deps{
 		Dest:       destFS,
 		Store:      hashStore,
+		Rules:      ruleEngine,
 		Categories: policy.Categories,
 		Layout:     policy.Destination.Layout,
 		DateFn:     func(f card.FileEntry) time.Time { t, _ := exifdate.DateOf(f); return t },

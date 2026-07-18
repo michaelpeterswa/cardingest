@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/michaelpeterswa/cardingest/internal/card"
+	"github.com/michaelpeterswa/cardingest/internal/config"
+	"github.com/michaelpeterswa/cardingest/internal/rules"
 	"github.com/michaelpeterswa/cardingest/internal/store"
 	"github.com/spf13/afero"
 )
@@ -122,6 +124,50 @@ func TestIngestDedupesSeenContent(t *testing.T) {
 	// The duplicate was not landed under B's name.
 	if ok, _ := afero.Exists(dest, "photos/2026-07-18/B.ARW"); ok {
 		t.Fatal("deduped content should not be re-landed")
+	}
+}
+
+func TestIngestHonorsRules(t *testing.T) {
+	ctx := context.Background()
+	eng, err := rules.Compile([]config.Rule{
+		{Name: "skip text", Action: "skip", Match: &config.RuleMatch{Ext: []string{".jpg"}}},
+		{Default: "keep"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	cardFS := afero.NewMemMapFs()
+	writeCard(t, cardFS, map[string]string{
+		"DCIM/A.ARW": "raw",
+		"DCIM/A.JPG": "jpeg", // skipped by rule
+	})
+	dest := afero.NewMemMapFs()
+	p := New(Deps{
+		Dest:       dest,
+		Store:      store.Noop{},
+		Rules:      eng,
+		Categories: map[string][]string{"photos": {".arw", ".jpg"}},
+		Layout:     "{category}/{date}",
+		DateFn:     func(card.FileEntry) time.Time { return fixedDate },
+		Log:        testLogger(),
+	})
+
+	res, err := p.Ingest(ctx, Input{Slot: card.SlotA, Serial: "c", CardFS: cardFS})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if res.Copied != 1 || res.Skipped != 1 {
+		t.Fatalf("copied=%d skipped=%d, want 1/1", res.Copied, res.Skipped)
+	}
+	if len(res.SkippedPath) != 1 || res.SkippedPath[0] != "DCIM/A.JPG" {
+		t.Fatalf("skipped paths = %v", res.SkippedPath)
+	}
+	if ok, _ := afero.Exists(dest, "photos/2026-07-18/A.JPG"); ok {
+		t.Fatal("rule-skipped file should not be copied")
+	}
+	if ok, _ := afero.Exists(dest, "photos/2026-07-18/A.ARW"); !ok {
+		t.Fatal("kept file should be copied")
 	}
 }
 
