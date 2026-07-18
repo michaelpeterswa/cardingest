@@ -7,9 +7,11 @@ by reading it back, then erases the ingested originals from the card.
 
 See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full specification.
 
-> **Status:** Milestone 1 — the `detect` + `mounter` core and the app skeleton.
-> The copy/verify/erase pipeline, rules engine, notifications, and web UI are
-> stubbed and land in later milestones.
+> **Status:** Milestone 2 — the copy → verify (NAS read-back) → erase pipeline
+> with a SQLite hash index for idempotent resume/dedupe, on top of the M1
+> `detect` + `mounter` core. The rules engine (currently keep-all + category
+> foldering), real EXIF/MP4 dating, notifications, and web UI land in later
+> milestones.
 
 ## How it runs
 

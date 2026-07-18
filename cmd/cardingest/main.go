@@ -14,13 +14,17 @@ import (
 
 	"alpineworks.io/ootel"
 	"github.com/michaelpeterswa/cardingest/internal/app"
+	"github.com/michaelpeterswa/cardingest/internal/card"
 	"github.com/michaelpeterswa/cardingest/internal/config"
 	"github.com/michaelpeterswa/cardingest/internal/detect"
+	"github.com/michaelpeterswa/cardingest/internal/exifdate"
 	"github.com/michaelpeterswa/cardingest/internal/logging"
 	"github.com/michaelpeterswa/cardingest/internal/mounter"
 	"github.com/michaelpeterswa/cardingest/internal/notify"
 	"github.com/michaelpeterswa/cardingest/internal/pipeline"
+	"github.com/michaelpeterswa/cardingest/internal/store"
 	"github.com/michaelpeterswa/cardingest/internal/web"
+	"github.com/spf13/afero"
 	"go.opentelemetry.io/contrib/instrumentation/host"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 )
@@ -68,11 +72,11 @@ func run(ctx context.Context, c *config.Config) error {
 
 	// Policy config (rules, destination, reader USB IDs, ...). A missing file is
 	// not fatal: a fresh deployment is configured through the UI.
-	store, err := config.NewStore(c.ConfigPath)
+	policyStore, err := config.NewStore(c.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("load policy config: %w", err)
 	}
-	policy := store.Get()
+	policy := policyStore.Get()
 
 	mock := c.ReaderMode == config.ReaderModeMock
 
@@ -91,6 +95,33 @@ func run(ctx context.Context, c *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("init mounter: %w", err)
 	}
+
+	// Verified-hash index (SQLite) for idempotence/dedupe.
+	hashStore, err := store.OpenSQLite(c.StatePath)
+	if err != nil {
+		return fmt.Errorf("open state db: %w", err)
+	}
+	defer func() { _ = hashStore.Close() }()
+
+	// Destination (NAS) filesystem. The host mounts the share; we write under it.
+	destPath := policy.Destination.Path
+	if destPath == "" {
+		destPath = "/data/dest"
+	}
+	if err := os.MkdirAll(destPath, 0o755); err != nil {
+		log.Warn("could not create destination dir (ok if NAS mounts it)",
+			slog.String("path", destPath), slog.String("error", err.Error()))
+	}
+	destFS := afero.NewBasePathFs(afero.NewOsFs(), destPath)
+
+	pipe := pipeline.New(pipeline.Deps{
+		Dest:       destFS,
+		Store:      hashStore,
+		Categories: policy.Categories,
+		Layout:     policy.Destination.Layout,
+		DateFn:     func(f card.FileEntry) time.Time { t, _ := exifdate.DateOf(f); return t },
+		Log:        log,
+	})
 
 	// The mock detector doubles as the web dev-trigger controller.
 	var mockCtl web.MockController
@@ -119,10 +150,15 @@ func run(ctx context.Context, c *config.Config) error {
 	application := app.New(app.Config{
 		Detector:  det,
 		Mounter:   mnt,
-		Pipeline:  pipeline.New(log),
+		Pipeline:  pipe,
 		Notifier:  notify.Logger{Log: log},
 		MountRoot: c.MountRoot,
-		Log:       log,
+		Policy: app.ErasePolicy{
+			EraseIngested: policy.Card.EraseIngested,
+			EraseSkipped:  policy.Card.EraseSkipped,
+			EjectWhenDone: policy.Card.EjectWhenDone,
+		},
+		Log: log,
 	})
 
 	log.Info("cardingest starting", slog.String("mode", string(c.ReaderMode)))

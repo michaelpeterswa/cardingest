@@ -1,9 +1,7 @@
 // Package app is the orchestrator: it consumes detector events and drives one
-// ingest worker per slot through the mount → scan → unmount lifecycle.
-//
-// Milestone 1 runs the scan-only pipeline, so the card stays read-only for the
-// whole job and no remount/erase happens yet. The worker structure is built to
-// host the full copy → verify → remount → erase sequence in later milestones.
+// ingest worker per slot through the full lifecycle — mount read-only, copy and
+// verify to the destination, then (only if verification passed and policy asks)
+// remount read-write, erase the ingested files, sync, and eject.
 package app
 
 import (
@@ -18,21 +16,31 @@ import (
 	"github.com/michaelpeterswa/cardingest/internal/mounter"
 	"github.com/michaelpeterswa/cardingest/internal/notify"
 	"github.com/michaelpeterswa/cardingest/internal/pipeline"
+	"github.com/spf13/afero"
 )
 
-// Runner processes one mounted card. *pipeline.Pipeline satisfies it; tests
-// inject their own.
-type Runner interface {
-	Run(ctx context.Context, in pipeline.Input) (pipeline.Result, error)
+// Ingestor copies+verifies a mounted card and erases ingested files afterward.
+// *pipeline.Pipeline satisfies it; tests inject their own.
+type Ingestor interface {
+	Ingest(ctx context.Context, in pipeline.Input) (pipeline.Result, error)
+	Erase(ctx context.Context, cardFS afero.Fs, paths []string) error
+}
+
+// ErasePolicy controls post-verification erasure and ejection.
+type ErasePolicy struct {
+	EraseIngested bool // erase copied+verified files from the card
+	EraseSkipped  bool // also erase rule-skipped files (opt-in, default off)
+	EjectWhenDone bool
 }
 
 // App wires the ingest pipeline together.
 type App struct {
 	det       detect.Detector
 	mnt       mounter.Mounter
-	pipe      Runner
+	pipe      Ingestor
 	notifier  notify.Notifier
 	mountRoot string
+	policy    ErasePolicy
 	log       *slog.Logger
 
 	mu      sync.Mutex
@@ -44,9 +52,10 @@ type App struct {
 type Config struct {
 	Detector  detect.Detector
 	Mounter   mounter.Mounter
-	Pipeline  Runner
+	Pipeline  Ingestor
 	Notifier  notify.Notifier
 	MountRoot string
+	Policy    ErasePolicy
 	Log       *slog.Logger
 }
 
@@ -57,6 +66,7 @@ func New(cfg Config) *App {
 		pipe:      cfg.Pipeline,
 		notifier:  cfg.Notifier,
 		mountRoot: cfg.MountRoot,
+		policy:    cfg.Policy,
 		log:       cfg.Log,
 		workers:   map[card.Slot]context.CancelFunc{},
 	}
@@ -161,31 +171,67 @@ func (a *App) ingest(ctx context.Context, ev detect.Event) {
 		a.notify(ctx, notify.EventError, slot, "mount failed: "+err.Error())
 		return
 	}
+	// Unmount (and eject if asked) always runs, even on error/cancel; a
+	// background context ensures teardown is not skipped.
 	defer func() {
 		bg := context.Background()
 		if err := a.mnt.Unmount(bg, m); err != nil {
 			a.log.Error("unmount failed", slog.String("slot", slot), slog.String("error", err.Error()))
 		}
-		if err := a.mnt.Eject(bg, ev.Device.DevPath); err != nil {
-			a.log.Error("eject failed", slog.String("slot", slot), slog.String("error", err.Error()))
+		if a.policy.EjectWhenDone {
+			if err := a.mnt.Eject(bg, ev.Device.DevPath); err != nil {
+				a.log.Error("eject failed", slog.String("slot", slot), slog.String("error", err.Error()))
+			}
 		}
 	}()
 
-	res, err := a.pipe.Run(ctx, pipeline.Input{
+	// Copy + verify. On any error the card is left intact (invariant #5).
+	res, err := a.pipe.Ingest(ctx, pipeline.Input{
 		Slot:   ev.Slot,
 		Serial: ev.Device.Serial,
-		FS:     m.FS,
+		CardFS: m.FS,
 	})
 	if err != nil {
-		a.log.Error("pipeline failed", slog.String("slot", slot), slog.String("error", err.Error()))
-		a.notify(ctx, notify.EventError, slot, "pipeline failed: "+err.Error())
+		a.log.Error("ingest failed", slog.String("slot", slot), slog.String("error", err.Error()))
+		a.notify(ctx, notify.EventError, slot, "ingest failed: "+err.Error())
 		return
+	}
+
+	// Decide what may be erased. Verified files are safe by construction;
+	// skipped files only if explicitly opted in.
+	var toErase []string
+	if a.policy.EraseIngested {
+		toErase = append(toErase, res.Verified...)
+	}
+	if a.policy.EraseSkipped {
+		toErase = append(toErase, res.SkippedPath...)
+	}
+
+	if len(toErase) > 0 {
+		if err := a.mnt.Remount(ctx, m, mounter.Options{ReadOnly: false, NoExec: true, NoSuid: true}); err != nil {
+			a.log.Error("remount rw failed; leaving card intact",
+				slog.String("slot", slot), slog.String("error", err.Error()))
+			a.notify(ctx, notify.EventError, slot, "remount failed: "+err.Error())
+			return
+		}
+		if err := a.pipe.Erase(ctx, m.FS, toErase); err != nil {
+			// Copies are verified and safe; a partial erase is a card-side
+			// problem worth surfacing but not data loss.
+			a.log.Error("erase incomplete", slog.String("slot", slot), slog.String("error", err.Error()))
+			a.notify(ctx, notify.EventError, slot, "erase incomplete: "+err.Error())
+		}
+		if err := a.mnt.Sync(ctx, m); err != nil {
+			a.log.Error("sync failed", slog.String("slot", slot), slog.String("error", err.Error()))
+		}
 	}
 
 	a.log.Info("ingest complete",
 		slog.String("slot", slot),
-		slog.Int("files", len(res.Files)),
-		slog.Int64("bytes", res.Bytes))
+		slog.Int("copied", res.Copied),
+		slog.Int("deduped", res.Deduped),
+		slog.Int("skipped", res.Skipped),
+		slog.Int("erased", len(toErase)),
+		slog.Int64("bytes", res.BytesCopied))
 	a.notify(ctx, notify.EventComplete, slot, "ingest complete")
 }
 

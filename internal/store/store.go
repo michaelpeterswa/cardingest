@@ -1,9 +1,10 @@
-// Package store persists jobs, per-file records, and the verified-hash index in
-// SQLite. The hash index gives idempotence: re-inserting a half-ingested card
-// resumes rather than re-copying, and previously-seen content dedupes.
+// Package store persists the verified-hash index (and, later, jobs and per-file
+// records) in SQLite. The hash index gives idempotence: re-inserting a
+// half-ingested card resumes rather than re-copying, and previously-seen
+// content dedupes.
 //
-// Milestone 1 stub: an in-memory Noop implementing the interface so the app can
-// be wired. The SQLite implementation lands in milestone 2.
+// The SQLite backend uses the pure-Go modernc.org/sqlite driver so the binary
+// still builds with CGO_ENABLED=0 for the distroless image.
 package store
 
 import "context"
@@ -18,7 +19,8 @@ type Store interface {
 	Close() error
 }
 
-// Noop is a stateless Store that never reports anything as seen.
+// Noop is a stateless Store that never reports anything as seen. Useful in
+// tests and when idempotence is not desired.
 type Noop struct{}
 
 func (Noop) Seen(context.Context, string) (bool, error) { return false, nil }
