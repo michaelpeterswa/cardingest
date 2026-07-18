@@ -1,73 +1,115 @@
-# go-start
+# cardingest
 
-A template repository for Go projects with built-in observability support.
+An SD / CFexpress **ingest appliance**: a single Go binary, deployed in Docker on a
+Linux host, that detects cards inserted into a Lexar RW530 dual-slot USB reader,
+copies wanted files to a NAS, organizes them by type and date, verifies every copy
+by reading it back, then erases the ingested originals from the card.
 
-## Features
+See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full specification.
 
-- Structured JSON logging with configurable log levels via [slog](https://pkg.go.dev/log/slog)
-- OpenTelemetry metrics and tracing via [ootel](https://alpineworks.io/ootel)
-- Runtime and host metrics instrumentation
-- Environment-based configuration via [env](https://github.com/caarlos0/env)
-- Multi-stage Docker build with distroless final image
-- Local development setup with Grafana LGTM stack
+> **Status:** Milestone 1 — the `detect` + `mounter` core and the app skeleton.
+> The copy/verify/erase pipeline, rules engine, notifications, and web UI are
+> stubbed and land in later milestones.
+
+## How it runs
+
+Every OS/hardware touchpoint (device detection, mounting, card/NAS file I/O) sits
+behind an interface with two implementations:
+
+- **`real`** — the deployed appliance on Linux: polls `/dev/disk/by-path/*usb*`,
+  matches the reader by USB vendor:product ID, and mounts via syscalls.
+- **`mock`** — local development on any OS (including macOS, where USB passthrough
+  and mount syscalls are unavailable): a simulated reader "inserts" a card from a
+  fixture directory and a fake mounter exposes it through an in-memory filesystem.
+
+`READER_MODE` selects between them.
 
 ## Configuration
 
-Configuration is managed through environment variables:
+Bootstrap configuration (immutable, set at deploy time) comes from environment
+variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LOG_LEVEL` | Logging level (debug, info, warn, error) | `error` |
+| `READER_MODE` | `real` (Linux appliance) or `mock` (dev) | `real` |
+| `MOCK_FIXTURE_DIR` | Fixture card directory root (mock mode) | - |
+| `CONFIG_PATH` | Path to the YAML policy config | `/config/config.yaml` |
+| `STATE_PATH` | SQLite state DB (jobs, files, hash index) | `/state/cardingest.db` |
+| `MOUNT_ROOT` | Where cards are mounted | `/run/cardingest/mnt` |
+| `HTTP_PORT` | API + UI port | `8080` |
+| `POLL_INTERVAL` | Device poll interval | `2s` |
+| `LOG_LEVEL` | `debug`/`info`/`warn`/`error` | `error` |
 | `METRICS_ENABLED` | Enable Prometheus metrics | `true` |
-| `METRICS_PORT` | Port for metrics endpoint | `8081` |
+| `METRICS_PORT` | Metrics endpoint port | `8081` |
 | `LOCAL` | Use OTLP gRPC exporter instead of Prometheus | `false` |
 | `TRACING_ENABLED` | Enable distributed tracing | `false` |
 | `TRACING_SAMPLERATE` | Trace sampling rate | `0.01` |
-| `TRACING_SERVICE` | Service name for traces | `katalog-agent` |
-| `TRACING_VERSION` | Service version for traces | - |
+| `TRACING_SERVICE` | Service name for traces | `cardingest` |
+
+Runtime **policy** (destination layout, categories, rules, reader USB IDs,
+notifiers) lives in the YAML file at `CONFIG_PATH` and is edited by the web UI.
+See [INSTRUCTIONS.md](INSTRUCTIONS.md) for its schema.
+
+## API
+
+The HTTP API is OpenAPI-first: [`api/openapi.yaml`](api/openapi.yaml) is the source
+of truth, and Go handlers/types are generated from it with
+[`oapi-codegen`](https://github.com/oapi-codegen/oapi-codegen) (`make generate`).
+All routes are versioned under `/api/v1/`.
 
 ## Getting Started
 
-### Run Locally with Docker Compose
+### Run locally in mock mode (no hardware)
 
 ```bash
-docker-compose up
+make generate   # regenerate API handlers from api/openapi.yaml
+READER_MODE=mock MOCK_FIXTURE_DIR=./testdata/cards LOG_LEVEL=info \
+  go run ./cmd/cardingest
+# in another shell, simulate inserting a card:
+curl -XPOST localhost:8080/api/v1/dev/insert \
+  -d '{"slot":"A","dir":"./testdata/cards/card1"}'
 ```
 
-This starts the application along with the Grafana LGTM (Loki, Grafana, Tempo, Mimir) stack for local observability:
+`make run-mock` wraps the run command.
 
-- **Application**: Port 8081 (metrics)
+### Deploy the appliance (Linux)
+
+```bash
+docker compose -f docker-compose.appliance.yml up -d
+```
+
+### Local observability stack (dev)
+
+```bash
+docker compose up
+```
+
+Starts the app plus the Grafana LGTM (Loki, Grafana, Tempo, Mimir) stack:
+
 - **Grafana UI**: http://localhost:3000
-- **OTLP gRPC**: Port 4317
-- **OTLP HTTP**: Port 4318
-
-### Build and Run
-
-```bash
-go build -o go-start ./cmd/go-start
-./go-start
-```
+- **OTLP gRPC/HTTP**: ports 4317 / 4318
 
 ## Project Structure
 
 ```
 .
-├── cmd/go-start/       # Application entrypoint
+├── api/openapi.yaml         # API contract (source of truth)
+├── cmd/cardingest/          # entrypoint
 ├── internal/
-│   ├── config/         # Environment-based configuration
-│   └── logging/        # Logging utilities
-├── docker/
-│   └── grafana/        # Grafana dashboard provisioning
-├── Dockerfile          # Multi-stage build
-└── docker-compose.yml  # Local development stack
+│   ├── card/                # shared domain types
+│   ├── config/              # env bootstrap + YAML policy config
+│   ├── detect/              # /dev poller, USB matching, per-slot state (real + mock)
+│   ├── mounter/             # mount ro → rw → eject lifecycle (real + fake)
+│   ├── app/                 # orchestrator: per-slot ingest workers
+│   ├── pipeline/            # scan/copy/verify/erase  (stub in M1)
+│   ├── rules/ exifdate/ store/ notify/   # stubs in M1
+│   └── web/                 # HTTP server + generated /api/v1 handlers
+├── Dockerfile               # multi-stage distroless build
+├── docker-compose.yml       # dev + observability stack
+└── docker-compose.appliance.yml   # production deployment
 ```
 
 ## CI/CD
 
-Pull requests are validated with:
-
-- **commitlint**: Conventional commit message enforcement
-- **golangci-lint**: Go linting
-- **yamllint**: YAML linting
-- **hadolint**: Dockerfile linting
-- **go test**: Unit tests
+Pull requests are validated with commitlint, golangci-lint, yamllint, hadolint,
+and `go test`.
