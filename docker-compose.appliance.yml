@@ -1,0 +1,29 @@
+---
+# Production appliance deployment. Runs the real Linux detector + mounter.
+# The host mounts the NAS share and bind-mounts it in; /dev is bound whole so
+# hotplugged card device nodes (absent at container start) must be visible.
+services:
+  cardingest:
+    image: cardingest:latest
+    build: .
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN                     # mount/umount inside the container
+    security_opt:
+      - apparmor:unconfined
+    environment:
+      READER_MODE: "real"
+      LOG_LEVEL: "info"
+      CONFIG_PATH: "/config/config.yaml"
+      STATE_PATH: "/state/cardingest.db"
+      MOUNT_ROOT: "/run/cardingest/mnt"
+      HTTP_PORT: "8080"
+      METRICS_ENABLED: "true"
+      METRICS_PORT: "8081"
+    volumes:
+      - /dev:/dev                     # hotplugged sdX nodes must be visible
+      - /mnt/nas/ingest:/data/dest    # host-mounted NFS share
+      - ./config:/config
+      - ./state:/state                # SQLite: jobs, files, hash index
+    ports:
+      - "8080:8080"

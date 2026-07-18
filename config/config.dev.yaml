@@ -1,0 +1,23 @@
+---
+# Local development policy for mock mode. destination.path is a local directory
+# so ingests actually land on macOS without a NAS. erase_ingested stays on so
+# the full lifecycle runs; the fake mounter operates on a copy of the fixture,
+# so the fixture itself is never harmed.
+
+destination:
+  path: ./.dev-ingest
+  layout: "{category}/{date}"
+  date_source: exif_then_mtime
+
+categories:
+  photos: [".arw", ".dng", ".jpg", ".jpeg"]
+  video: [".mp4", ".mov"]
+  other: ["*"]
+
+card:
+  erase_ingested: true
+  erase_skipped: false
+  eject_when_done: true
+
+reader:
+  usb_ids: []

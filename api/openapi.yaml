@@ -1,0 +1,150 @@
+---
+openapi: 3.0.3
+info:
+  title: cardingest API
+  version: "1.0.0"
+  description: >
+    HTTP API for the cardingest SD/CFexpress ingest appliance. All routes are
+    versioned under /api/v1. This contract is the source of truth; Go handlers
+    and types are generated from it with oapi-codegen (`make generate`).
+
+servers:
+  - url: /
+
+paths:
+  /api/v1/healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness probe.
+      responses:
+        "200":
+          description: Service is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /api/v1/dev/insert:
+    post:
+      operationId: devInsert
+      summary: Simulate inserting a card (mock reader mode only).
+      description: >
+        Reports the directory `dir` as a card present in `slot`. Only available
+        when the process runs with READER_MODE=mock.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InsertRequest"
+      responses:
+        "202":
+          description: Insertion accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Accepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: The slot is already occupied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Not running in mock mode.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/dev/remove:
+    post:
+      operationId: devRemove
+      summary: Simulate removing a card (mock reader mode only).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoveRequest"
+      responses:
+        "202":
+          description: Removal accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Accepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: The slot is empty.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Not running in mock mode.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  responses:
+    BadRequest:
+      description: The request body was invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+
+    InsertRequest:
+      type: object
+      required: [slot]
+      properties:
+        slot:
+          type: string
+          description: Reader slot identifier, e.g. "A".
+          example: A
+        dir:
+          type: string
+          description: >
+            Directory to present as the card's contents. Defaults to
+            <MOCK_FIXTURE_DIR>/<slot> when omitted.
+
+    RemoveRequest:
+      type: object
+      required: [slot]
+      properties:
+        slot:
+          type: string
+          example: A
+
+    Accepted:
+      type: object
+      required: [status, slot]
+      properties:
+        status:
+          type: string
+          example: accepted
+        slot:
+          type: string
+          example: A
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

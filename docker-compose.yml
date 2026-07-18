@@ -17,7 +17,7 @@ services:
       # tracing
       TRACING_ENABLED: "false"
       TRACING_SAMPLERATE: "1.0"
-      TRACING_SERVICE: "go-start"
+      TRACING_SERVICE: "cardingest"
       TRACING_VERSION: "0.0.1"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://lgtm:4317"
 
@@ -28,9 +28,9 @@ services:
   lgtm:
     image: grafana/otel-lgtm
     ports:
-      - "3000:3000" # Grafana UI
-      - "4317:4317" # OTLP
-      - "4318:4318" # OTLPHTTP
+      - "3000:3000"  # Grafana UI
+      - "4317:4317"  # OTLP
+      - "4318:4318"  # OTLPHTTP
     volumes:
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
       - ./docker/grafana/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/grafana-dashboards.yaml
