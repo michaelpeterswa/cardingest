@@ -155,11 +155,18 @@ func run(ctx context.Context, c *config.Config) error {
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
+	// Notifiers from policy (empty => dev Logger). A misconfigured notifier is
+	// logged but never blocks ingest.
+	notifier, nerr := notify.Build(policy.Notify, log)
+	if nerr != nil {
+		log.Warn("some notifiers could not be built", slog.String("error", nerr.Error()))
+	}
+
 	application := app.New(app.Config{
 		Detector:  det,
 		Mounter:   mnt,
 		Pipeline:  pipe,
-		Notifier:  notify.Logger{Log: log},
+		Notifier:  notifier,
 		MountRoot: c.MountRoot,
 		Policy: app.ErasePolicy{
 			EraseIngested: policy.Card.EraseIngested,

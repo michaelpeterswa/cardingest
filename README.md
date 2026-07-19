@@ -7,11 +7,12 @@ by reading it back, then erases the ingested originals from the card.
 
 See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full specification.
 
-> **Status:** Milestone 3 — the ordered keep/skip rules engine (`ext`,
-> `path_glob`, `min`/`max_size`, first-match-wins with a `default`), driven by
-> the YAML config, on top of the M2 copy → verify → erase pipeline and its
-> SQLite idempotence. Real EXIF/MP4 dating, notifications, and the web UI land
-> in later milestones.
+> **Status:** Milestone 4 — completion/error notifications with job stats,
+> delivered to the [pulsar-notification-pipeline](https://github.com/michaelpeterswa/pulsar-notifcation-pipeline)
+> writer (the only backend today; the `Notifier` interface + `notify.Build`
+> factory make new backends drop-in). Built on the M1–M3 detect/mount, copy →
+> verify → erase pipeline with SQLite idempotence, and the ordered rules engine.
+> Real EXIF/MP4 dating and the web UI land in later milestones.
 
 ## How it runs
 

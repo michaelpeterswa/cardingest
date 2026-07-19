@@ -58,9 +58,15 @@ type Reader struct {
 }
 
 type Notifier struct {
-	Type string   `yaml:"type"` // ntfy | webhook | smtp
+	Type string   `yaml:"type"` // pulsar (only backend supported today)
 	URL  string   `yaml:"url,omitempty"`
 	On   []string `yaml:"on,omitempty"` // start | complete | error
+
+	// pulsar-specific (non-secret) fields. The bearer token is never stored
+	// here; it is read from the environment variable named by TokenEnv.
+	UserKey  string `yaml:"user_key,omitempty"`  // Pushover user/group key
+	Priority int    `yaml:"priority,omitempty"`  // Pushover priority, -2..2
+	TokenEnv string `yaml:"token_env,omitempty"` // env var holding bearer token
 }
 
 // Store loads, holds, and persists the YAML policy File. It is safe for
