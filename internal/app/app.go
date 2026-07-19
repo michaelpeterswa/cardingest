@@ -8,6 +8,7 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"log/slog"
 
@@ -158,7 +159,8 @@ func (a *App) shutdown() {
 // cancellation, using a background context so teardown is not skipped.
 func (a *App) ingest(ctx context.Context, ev detect.Event) {
 	slot := string(ev.Slot)
-	a.notify(ctx, notify.EventStart, slot, "ingest started")
+	start := time.Now()
+	a.emit(ctx, notify.Notification{Event: notify.EventStart, Slot: slot, Message: "ingest started"})
 
 	target := filepath.Join(a.mountRoot, slot)
 	m, err := a.mnt.Mount(ctx, ev.Device.DevPath, target, mounter.Options{
@@ -168,7 +170,7 @@ func (a *App) ingest(ctx context.Context, ev detect.Event) {
 	})
 	if err != nil {
 		a.log.Error("mount failed", slog.String("slot", slot), slog.String("error", err.Error()))
-		a.notify(ctx, notify.EventError, slot, "mount failed: "+err.Error())
+		a.emitError(ctx, slot, "mount failed", err)
 		return
 	}
 	// Unmount (and eject if asked) always runs, even on error/cancel; a
@@ -193,7 +195,7 @@ func (a *App) ingest(ctx context.Context, ev detect.Event) {
 	})
 	if err != nil {
 		a.log.Error("ingest failed", slog.String("slot", slot), slog.String("error", err.Error()))
-		a.notify(ctx, notify.EventError, slot, "ingest failed: "+err.Error())
+		a.emitError(ctx, slot, "ingest failed", err)
 		return
 	}
 
@@ -211,14 +213,14 @@ func (a *App) ingest(ctx context.Context, ev detect.Event) {
 		if err := a.mnt.Remount(ctx, m, mounter.Options{ReadOnly: false, NoExec: true, NoSuid: true}); err != nil {
 			a.log.Error("remount rw failed; leaving card intact",
 				slog.String("slot", slot), slog.String("error", err.Error()))
-			a.notify(ctx, notify.EventError, slot, "remount failed: "+err.Error())
+			a.emitError(ctx, slot, "remount failed", err)
 			return
 		}
 		if err := a.pipe.Erase(ctx, m.FS, toErase); err != nil {
 			// Copies are verified and safe; a partial erase is a card-side
 			// problem worth surfacing but not data loss.
 			a.log.Error("erase incomplete", slog.String("slot", slot), slog.String("error", err.Error()))
-			a.notify(ctx, notify.EventError, slot, "erase incomplete: "+err.Error())
+			a.emitError(ctx, slot, "erase incomplete", err)
 		}
 		if err := a.mnt.Sync(ctx, m); err != nil {
 			a.log.Error("sync failed", slog.String("slot", slot), slog.String("error", err.Error()))
@@ -232,11 +234,31 @@ func (a *App) ingest(ctx context.Context, ev detect.Event) {
 		slog.Int("skipped", res.Skipped),
 		slog.Int("erased", len(toErase)),
 		slog.Int64("bytes", res.BytesCopied))
-	a.notify(ctx, notify.EventComplete, slot, "ingest complete")
+	a.emit(ctx, notify.Notification{
+		Event:       notify.EventComplete,
+		Slot:        slot,
+		Message:     "ingest complete",
+		Copied:      res.Copied,
+		Deduped:     res.Deduped,
+		Skipped:     res.Skipped,
+		Erased:      len(toErase),
+		BytesCopied: res.BytesCopied,
+		Duration:    time.Since(start),
+		ByCategory:  res.ByCategory,
+	})
 }
 
-func (a *App) notify(ctx context.Context, ev notify.EventType, slot, msg string) {
-	if err := a.notifier.Notify(ctx, notify.Notification{Event: ev, Slot: slot, Message: msg}); err != nil {
+func (a *App) emit(ctx context.Context, n notify.Notification) {
+	if err := a.notifier.Notify(ctx, n); err != nil {
 		a.log.Warn("notify failed", slog.String("error", err.Error()))
 	}
+}
+
+func (a *App) emitError(ctx context.Context, slot, msg string, cause error) {
+	a.emit(ctx, notify.Notification{
+		Event:   notify.EventError,
+		Slot:    slot,
+		Message: msg,
+		Err:     cause.Error(),
+	})
 }
