@@ -14,30 +14,41 @@ import (
 	"github.com/michaelpeterswa/cardingest/internal/card"
 )
 
+const (
+	defaultByPathDir   = "/dev/disk/by-path"
+	defaultSysBlockDir = "/sys/class/block"
+)
+
 func newReal(cfg Config, log *slog.Logger) (Detector, error) {
 	allow := make(map[string]bool, len(cfg.USBIDs))
 	for _, id := range cfg.USBIDs {
 		allow[strings.ToLower(strings.TrimSpace(id))] = true
 	}
-	return newPollDetector(&linuxEnum{allow: allow, log: log}, cfg, log), nil
+	return newPollDetector(&linuxEnum{
+		allow:       allow,
+		byPathDir:   defaultByPathDir,
+		sysBlockDir: defaultSysBlockDir,
+		log:         log,
+	}, cfg, log), nil
 }
 
-// linuxEnum enumerates matching USB block devices by walking
-// /dev/disk/by-path and reading USB attributes from sysfs.
+// linuxEnum enumerates matching USB block devices by walking by-path and
+// reading USB attributes from sysfs. byPathDir/sysBlockDir are fields (not
+// constants) so tests can point them at a fixture tree.
 type linuxEnum struct {
-	allow map[string]bool
-	log   *slog.Logger
+	allow       map[string]bool
+	byPathDir   string
+	sysBlockDir string
+	log         *slog.Logger
 }
-
-const byPathDir = "/dev/disk/by-path"
 
 func (e *linuxEnum) enumerate(_ context.Context) (map[card.Slot]card.DeviceInfo, error) {
-	entries, err := os.ReadDir(byPathDir)
+	entries, err := os.ReadDir(e.byPathDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil // no USB block devices present yet
 		}
-		return nil, fmt.Errorf("read %s: %w", byPathDir, err)
+		return nil, fmt.Errorf("read %s: %w", e.byPathDir, err)
 	}
 
 	out := make(map[card.Slot]card.DeviceInfo)
@@ -48,18 +59,23 @@ func (e *linuxEnum) enumerate(_ context.Context) (map[card.Slot]card.DeviceInfo,
 			continue
 		}
 
-		linkPath := filepath.Join(byPathDir, name)
+		linkPath := filepath.Join(e.byPathDir, name)
 		dev, err := filepath.EvalSymlinks(linkPath)
 		if err != nil {
 			continue
 		}
 
-		vid, pid, serial, size, err := readUSBAttrs(filepath.Base(dev))
+		vid, pid, serial, size, err := e.readUSBAttrs(filepath.Base(dev))
 		if err != nil {
 			continue
 		}
 		if !e.allow[vid+":"+pid] {
 			continue // safety invariant #4: only allowlisted readers are touched
+		}
+		if size == 0 {
+			// A card reader keeps its /dev/sdX node with no medium inserted;
+			// size 0 means "empty slot", not an ingestable card.
+			continue
 		}
 
 		slot := card.Slot(usbPortFromByPath(name))
@@ -75,28 +91,10 @@ func (e *linuxEnum) enumerate(_ context.Context) (map[card.Slot]card.DeviceInfo,
 	return out, nil
 }
 
-// usbPortFromByPath extracts the stable physical port token from a by-path
-// name, e.g. "...-usb-0:1.1:1.0-scsi-..." -> "1.1". This token identifies the
-// reader slot independent of the inserted card.
-func usbPortFromByPath(name string) string {
-	_, rest, ok := strings.Cut(name, "usb-")
-	if !ok {
-		return "unknown"
-	}
-	if j := strings.IndexByte(rest, '-'); j >= 0 {
-		rest = rest[:j]
-	}
-	parts := strings.Split(rest, ":")
-	if len(parts) >= 2 {
-		return parts[1]
-	}
-	return rest
-}
-
 // readUSBAttrs reads idVendor/idProduct/serial and size for block device base
 // (e.g. "sdb") by walking up the sysfs tree to the owning USB device.
-func readUSBAttrs(base string) (vid, pid, serial string, size uint64, err error) {
-	sysBlock := filepath.Join("/sys/class/block", base)
+func (e *linuxEnum) readUSBAttrs(base string) (vid, pid, serial string, size uint64, err error) {
+	sysBlock := filepath.Join(e.sysBlockDir, base)
 
 	dev, err := filepath.EvalSymlinks(sysBlock)
 	if err != nil {

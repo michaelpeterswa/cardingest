@@ -132,7 +132,7 @@ func run(ctx context.Context, c *config.Config) error {
 		Rules:      ruleEngine,
 		Categories: policy.Categories,
 		Layout:     policy.Destination.Layout,
-		DateFn:     func(f card.FileEntry) time.Time { t, _ := exifdate.DateOf(f); return t },
+		DateFn:     func(fs afero.Fs, f card.FileEntry) time.Time { t, _ := exifdate.DateOf(fs, f); return t },
 		OnProgress: func(p pipeline.Progress) {
 			hub.Publish(events.Event{Type: "progress", Slot: p.Slot, Data: p})
 		},

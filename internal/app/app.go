@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -271,17 +272,22 @@ func (a *App) ingest(ctx context.Context, ev detect.Event) {
 		Copied: res.Copied, Deduped: res.Deduped, Skipped: res.Skipped,
 		Erased: len(toErase), Bytes: res.BytesCopied,
 	})
+	msg := "ingest complete"
+	if res.Failed > 0 {
+		msg = fmt.Sprintf("ingest complete, %d file(s) failed and left on the card", res.Failed)
+	}
 	a.log.Info("ingest complete",
 		slog.String("slot", slot),
 		slog.Int("copied", res.Copied),
 		slog.Int("deduped", res.Deduped),
 		slog.Int("skipped", res.Skipped),
+		slog.Int("failed", res.Failed),
 		slog.Int("erased", len(toErase)),
 		slog.Int64("bytes", res.BytesCopied))
 	a.emit(ctx, notify.Notification{
 		Event:       notify.EventComplete,
 		Slot:        slot,
-		Message:     "ingest complete",
+		Message:     msg,
 		Copied:      res.Copied,
 		Deduped:     res.Deduped,
 		Skipped:     res.Skipped,
@@ -292,7 +298,7 @@ func (a *App) ingest(ctx context.Context, ev detect.Event) {
 	})
 	a.publish("job_complete", slot, map[string]any{
 		"jobId": jobID, "copied": res.Copied, "deduped": res.Deduped,
-		"skipped": res.Skipped, "erased": len(toErase),
+		"skipped": res.Skipped, "failed": res.Failed, "erased": len(toErase),
 		"bytes": res.BytesCopied, "durationMs": dur.Milliseconds(),
 	})
 }

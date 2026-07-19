@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -24,7 +25,7 @@ func newTestPipeline(dest afero.Fs, st store.Store) *Pipeline {
 		Store:      st,
 		Categories: map[string][]string{"photos": {".arw", ".jpg"}, "video": {".mp4"}},
 		Layout:     "{category}/{date}",
-		DateFn:     func(card.FileEntry) time.Time { return fixedDate },
+		DateFn:     func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
 		Log:        testLogger(),
 	})
 }
@@ -149,7 +150,7 @@ func TestIngestHonorsRules(t *testing.T) {
 		Rules:      eng,
 		Categories: map[string][]string{"photos": {".arw", ".jpg"}},
 		Layout:     "{category}/{date}",
-		DateFn:     func(card.FileEntry) time.Time { return fixedDate },
+		DateFn:     func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
 		Log:        testLogger(),
 	})
 
@@ -168,6 +169,67 @@ func TestIngestHonorsRules(t *testing.T) {
 	}
 	if ok, _ := afero.Exists(dest, "photos/2026-07-18/A.ARW"); !ok {
 		t.Fatal("kept file should be copied")
+	}
+}
+
+// unreadableFS wraps an Fs and fails Open for one specific path, simulating an
+// unreadable card file.
+type unreadableFS struct {
+	afero.Fs
+	bad string
+}
+
+func (u unreadableFS) Open(name string) (afero.File, error) {
+	if name == u.bad {
+		return nil, errors.New("simulated card read error")
+	}
+	return u.Fs.Open(name)
+}
+
+func TestIngestSkipsUnreadableFileButContinues(t *testing.T) {
+	ctx := context.Background()
+	base := afero.NewMemMapFs()
+	writeCard(t, base, map[string]string{
+		"DCIM/good.ARW": "good-bytes",
+		"DCIM/bad.ARW":  "unreadable",
+	})
+	cardFS := unreadableFS{Fs: base, bad: "DCIM/bad.ARW"}
+	dest := afero.NewMemMapFs()
+
+	p := newTestPipeline(dest, store.Noop{})
+	res, err := p.Ingest(ctx, Input{Slot: card.SlotA, Serial: "c", CardFS: cardFS})
+	if err != nil {
+		t.Fatalf("Ingest should not abort on a per-file error: %v", err)
+	}
+	if res.Copied != 1 || res.Failed != 1 {
+		t.Fatalf("copied=%d failed=%d, want 1/1", res.Copied, res.Failed)
+	}
+	// The failed file is NOT in the erase set; the good one is.
+	if len(res.Verified) != 1 || res.Verified[0] != "DCIM/good.ARW" {
+		t.Fatalf("verified = %v", res.Verified)
+	}
+	if len(res.FailedPath) != 1 || res.FailedPath[0] != "DCIM/bad.ARW" {
+		t.Fatalf("failedPath = %v", res.FailedPath)
+	}
+	if ok, _ := afero.Exists(dest, "photos/2026-07-18/good.ARW"); !ok {
+		t.Fatal("good file should have landed")
+	}
+}
+
+// roDestFS makes the destination unwritable, simulating a dead NAS.
+type roDestFS struct{ afero.Fs }
+
+func (roDestFS) Create(string) (afero.File, error) { return nil, errors.New("nas is down") }
+
+func TestIngestAbortsOnDestFailure(t *testing.T) {
+	ctx := context.Background()
+	cardFS := afero.NewMemMapFs()
+	writeCard(t, cardFS, map[string]string{"DCIM/a.ARW": "x"})
+	dest := roDestFS{Fs: afero.NewMemMapFs()}
+
+	p := newTestPipeline(dest, store.Noop{})
+	if _, err := p.Ingest(ctx, Input{Slot: card.SlotA, Serial: "c", CardFS: cardFS}); err == nil {
+		t.Fatal("a destination failure must abort the job (invariant #5)")
 	}
 }
 

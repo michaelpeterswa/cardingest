@@ -13,8 +13,9 @@ See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full specification.
 > `status`, `config`) and a hand-written SSE stream (`/api/v1/events`) fed by a
 > job-history table in SQLite and a live pipeline progress callback. This
 > completes the M1–M4 core (detect/mount, copy → verify → erase with SQLite
-> idempotence, the ordered rules engine, and notifications). Remaining polish:
-> real EXIF/MP4 dating and per-file ingest resilience.
+> idempotence, the ordered rules engine, and notifications), plus the polish
+> pass: real EXIF/MP4 capture-date foldering, per-file ingest resilience (one
+> bad file no longer strands the card), and a fixture-tested Linux enumerator.
 
 ## How it runs
 
@@ -94,6 +95,24 @@ Starts the app plus the Grafana LGTM (Loki, Grafana, Tempo, Mimir) stack:
 - **Grafana UI**: http://localhost:3000
 - **OTLP gRPC/HTTP**: ports 4317 / 4318
 
+## Validating the reader on the appliance
+
+The mock path is covered by tests; the real Linux enumeration is tested against a
+fixture sysfs tree (`internal/detect/detect_linux_test.go`, runs in CI). The one
+thing that can only be confirmed on the actual hardware is the reader's USB IDs
+and slot topology:
+
+1. Plug in the reader and list USB devices: `lsusb` (note the `ID vvvv:pppp` of
+   each **mass-storage** function — the RW530 exposes one bridge per slot, so
+   you'll see two).
+2. Insert a card and confirm a block device appears: `ls -l /dev/disk/by-path/ | grep usb`.
+   Read its IDs from sysfs, e.g.
+   `cat /sys/class/block/sdX/device/../../idVendor /sys/class/block/sdX/device/../../idProduct`.
+3. Put those `vendor:product` pairs in `reader.usb_ids` in the config, set
+   `READER_MODE=real`, and start the appliance. An empty slot keeps its
+   `/dev/sdX` node but reports size 0 — cardingest ignores it (only a card with a
+   real medium triggers ingest).
+
 ## Project Structure
 
 ```
@@ -111,7 +130,7 @@ Starts the app plus the Grafana LGTM (Loki, Grafana, Tempo, Mimir) stack:
 │   ├── store/               # SQLite: hash index + job history/stats
 │   ├── notify/              # pulsar notifier (extensible)
 │   ├── events/              # in-process pub/sub for live SSE
-│   ├── exifdate/            # capture-date extraction (mtime today)
+│   ├── exifdate/            # EXIF/MP4 capture-date extraction (mtime fallback)
 │   └── web/                 # REST + SSE + go:embed UI (web/ui/)
 ├── Dockerfile               # multi-stage distroless build
 ├── docker-compose.yml       # dev + observability stack
