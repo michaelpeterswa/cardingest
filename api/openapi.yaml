@@ -24,6 +24,85 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  /api/v1/status:
+    get:
+      operationId: getStatus
+      summary: Live per-slot ingest state.
+      responses:
+        "200":
+          description: Current slot states.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SlotState"
+
+  /api/v1/jobs:
+    get:
+      operationId: getJobs
+      summary: Recent ingest jobs, newest first.
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+      responses:
+        "200":
+          description: Job history.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+
+  /api/v1/stats:
+    get:
+      operationId: getStats
+      summary: Aggregate ingest statistics.
+      responses:
+        "200":
+          description: Stats.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Stats"
+
+  /api/v1/config:
+    get:
+      operationId: getConfig
+      summary: Current policy config as YAML.
+      responses:
+        "200":
+          description: Config document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigDoc"
+    put:
+      operationId: putConfig
+      summary: Replace the policy config (validated before saving).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigDoc"
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigDoc"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
   /api/v1/dev/insert:
     post:
       operationId: devInsert
@@ -141,6 +220,77 @@ components:
         slot:
           type: string
           example: A
+
+    SlotState:
+      type: object
+      required: [slot, state]
+      properties:
+        slot:
+          type: string
+        state:
+          type: string
+          description: idle | ingesting
+        jobId:
+          type: integer
+          format: int64
+
+    Job:
+      type: object
+      required: [id, slot, serial, status, startedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        slot:
+          type: string
+        serial:
+          type: string
+        status:
+          type: string
+          description: running | complete | error
+        copied:
+          type: integer
+        deduped:
+          type: integer
+        skipped:
+          type: integer
+        erased:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+        error:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+
+    Stats:
+      type: object
+      required: [totalJobs, completeJobs, errorJobs, filesCopied, bytes]
+      properties:
+        totalJobs:
+          type: integer
+        completeJobs:
+          type: integer
+        errorJobs:
+          type: integer
+        filesCopied:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+
+    ConfigDoc:
+      type: object
+      required: [yaml]
+      properties:
+        yaml:
+          type: string
+          description: The policy config as YAML text.
 
     Error:
       type: object

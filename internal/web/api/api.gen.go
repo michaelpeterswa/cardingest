@@ -11,13 +11,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/oapi-codegen/runtime"
 )
 
 // Accepted defines model for Accepted.
@@ -27,6 +30,12 @@ type Accepted struct {
 
 	// Status Example: accepted
 	Status string `json:"status"`
+}
+
+// ConfigDoc defines model for ConfigDoc.
+type ConfigDoc struct {
+	// Yaml The policy config as YAML text.
+	Yaml string `json:"yaml"`
 }
 
 // Error defines model for Error.
@@ -51,14 +60,58 @@ type InsertRequest struct {
 	Slot string `json:"slot"`
 }
 
+// Job defines model for Job.
+type Job struct {
+	Bytes      *int64     `json:"bytes,omitempty"`
+	Copied     *int       `json:"copied,omitempty"`
+	Deduped    *int       `json:"deduped,omitempty"`
+	Erased     *int       `json:"erased,omitempty"`
+	Error      *string    `json:"error,omitempty"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	Id         int64      `json:"id"`
+	Serial     string     `json:"serial"`
+	Skipped    *int       `json:"skipped,omitempty"`
+	Slot       string     `json:"slot"`
+	StartedAt  time.Time  `json:"startedAt"`
+
+	// Status running | complete | error
+	Status string `json:"status"`
+}
+
 // RemoveRequest defines model for RemoveRequest.
 type RemoveRequest struct {
 	// Slot Example: A
 	Slot string `json:"slot"`
 }
 
+// SlotState defines model for SlotState.
+type SlotState struct {
+	JobId *int64 `json:"jobId,omitempty"`
+	Slot  string `json:"slot"`
+
+	// State idle | ingesting
+	State string `json:"state"`
+}
+
+// Stats defines model for Stats.
+type Stats struct {
+	Bytes        int64 `json:"bytes"`
+	CompleteJobs int   `json:"completeJobs"`
+	ErrorJobs    int   `json:"errorJobs"`
+	FilesCopied  int   `json:"filesCopied"`
+	TotalJobs    int   `json:"totalJobs"`
+}
+
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
+
+// GetJobsParams defines parameters for GetJobs.
+type GetJobsParams struct {
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// PutConfigJSONRequestBody defines body for PutConfig for application/json ContentType.
+type PutConfigJSONRequestBody = ConfigDoc
 
 // DevInsertJSONRequestBody defines body for DevInsert for application/json ContentType.
 type DevInsertJSONRequestBody = InsertRequest
@@ -68,6 +121,12 @@ type DevRemoveJSONRequestBody = RemoveRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// GetConfig Current policy config as YAML.
+	// (GET /api/v1/config)
+	GetConfig(w http.ResponseWriter, r *http.Request)
+	// PutConfig Replace the policy config (validated before saving).
+	// (PUT /api/v1/config)
+	PutConfig(w http.ResponseWriter, r *http.Request)
 	// DevInsert Simulate inserting a card (mock reader mode only).
 	// (POST /api/v1/dev/insert)
 	DevInsert(w http.ResponseWriter, r *http.Request)
@@ -77,6 +136,15 @@ type ServerInterface interface {
 	// GetHealthz Liveness probe.
 	// (GET /api/v1/healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
+	// GetJobs Recent ingest jobs, newest first.
+	// (GET /api/v1/jobs)
+	GetJobs(w http.ResponseWriter, r *http.Request, params GetJobsParams)
+	// GetStats Aggregate ingest statistics.
+	// (GET /api/v1/stats)
+	GetStats(w http.ResponseWriter, r *http.Request)
+	// GetStatus Live per-slot ingest state.
+	// (GET /api/v1/status)
+	GetStatus(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -87,6 +155,34 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// GetConfig operation middleware
+func (siw *ServerInterfaceWrapper) GetConfig(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutConfig operation middleware
+func (siw *ServerInterfaceWrapper) PutConfig(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutConfig(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // DevInsert operation middleware
 func (siw *ServerInterfaceWrapper) DevInsert(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +217,67 @@ func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealthz(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetJobs operation middleware
+func (siw *ServerInterfaceWrapper) GetJobs(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetJobsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetJobs(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetStats operation middleware
+func (siw *ServerInterfaceWrapper) GetStats(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetStats(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetStatus(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetStatus(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -251,6 +408,11 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	}
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/healthz", wrapper.GetHealthz)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/status", wrapper.GetStatus)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/jobs", wrapper.GetJobs)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/stats", wrapper.GetStats)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/v1/config", wrapper.GetConfig)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/api/v1/config", wrapper.PutConfig)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/dev/insert", wrapper.DevInsert)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/v1/dev/remove", wrapper.DevRemove)
 
@@ -258,6 +420,63 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 }
 
 type BadRequestJSONResponse Error
+
+type GetConfigRequestObject struct {
+}
+
+type GetConfigResponseObject interface {
+	VisitGetConfigResponse(w http.ResponseWriter) error
+}
+
+type GetConfig200JSONResponse ConfigDoc
+
+func (response GetConfig200JSONResponse) VisitGetConfigResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutConfigRequestObject struct {
+	Body *PutConfigJSONRequestBody
+}
+
+type PutConfigResponseObject interface {
+	VisitPutConfigResponse(w http.ResponseWriter) error
+}
+
+type PutConfig200JSONResponse ConfigDoc
+
+func (response PutConfig200JSONResponse) VisitPutConfigResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutConfig400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PutConfig400JSONResponse) VisitPutConfigResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
 
 type DevInsertRequestObject struct {
 	Body *DevInsertJSONRequestBody
@@ -408,8 +627,78 @@ func (response GetHealthz200JSONResponse) VisitGetHealthzResponse(w http.Respons
 	return err
 }
 
+type GetJobsRequestObject struct {
+	Params GetJobsParams
+}
+
+type GetJobsResponseObject interface {
+	VisitGetJobsResponse(w http.ResponseWriter) error
+}
+
+type GetJobs200JSONResponse []Job
+
+func (response GetJobs200JSONResponse) VisitGetJobsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetStatsRequestObject struct {
+}
+
+type GetStatsResponseObject interface {
+	VisitGetStatsResponse(w http.ResponseWriter) error
+}
+
+type GetStats200JSONResponse Stats
+
+func (response GetStats200JSONResponse) VisitGetStatsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetStatusRequestObject struct {
+}
+
+type GetStatusResponseObject interface {
+	VisitGetStatusResponse(w http.ResponseWriter) error
+}
+
+type GetStatus200JSONResponse []SlotState
+
+func (response GetStatus200JSONResponse) VisitGetStatusResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// GetConfig Current policy config as YAML.
+	// (GET /api/v1/config)
+	GetConfig(ctx context.Context, request GetConfigRequestObject) (GetConfigResponseObject, error)
+	// PutConfig Replace the policy config (validated before saving).
+	// (PUT /api/v1/config)
+	PutConfig(ctx context.Context, request PutConfigRequestObject) (PutConfigResponseObject, error)
 	// DevInsert Simulate inserting a card (mock reader mode only).
 	// (POST /api/v1/dev/insert)
 	DevInsert(ctx context.Context, request DevInsertRequestObject) (DevInsertResponseObject, error)
@@ -419,6 +708,15 @@ type StrictServerInterface interface {
 	// GetHealthz Liveness probe.
 	// (GET /api/v1/healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
+	// GetJobs Recent ingest jobs, newest first.
+	// (GET /api/v1/jobs)
+	GetJobs(ctx context.Context, request GetJobsRequestObject) (GetJobsResponseObject, error)
+	// GetStats Aggregate ingest statistics.
+	// (GET /api/v1/stats)
+	GetStats(ctx context.Context, request GetStatsRequestObject) (GetStatsResponseObject, error)
+	// GetStatus Live per-slot ingest state.
+	// (GET /api/v1/status)
+	GetStatus(ctx context.Context, request GetStatusRequestObject) (GetStatusResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -458,6 +756,61 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// GetConfig operation middleware
+func (sh *strictHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
+	var request GetConfigRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetConfig(ctx, request.(GetConfigRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetConfig")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetConfigResponseObject); ok {
+		if err := validResponse.VisitGetConfigResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutConfig operation middleware
+func (sh *strictHandler) PutConfig(w http.ResponseWriter, r *http.Request) {
+	var request PutConfigRequestObject
+
+	var body PutConfigJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutConfig(ctx, request.(PutConfigRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutConfig")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutConfigResponseObject); ok {
+		if err := validResponse.VisitPutConfigResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // DevInsert operation middleware
@@ -546,27 +899,109 @@ func (sh *strictHandler) GetHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetJobs operation middleware
+func (sh *strictHandler) GetJobs(w http.ResponseWriter, r *http.Request, params GetJobsParams) {
+	var request GetJobsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetJobs(ctx, request.(GetJobsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetJobs")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetJobsResponseObject); ok {
+		if err := validResponse.VisitGetJobsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetStats operation middleware
+func (sh *strictHandler) GetStats(w http.ResponseWriter, r *http.Request) {
+	var request GetStatsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetStats(ctx, request.(GetStatsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetStats")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetStatsResponseObject); ok {
+		if err := validResponse.VisitGetStatsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetStatus operation middleware
+func (sh *strictHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
+	var request GetStatusRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetStatus(ctx, request.(GetStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetStatus")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetStatusResponseObject); ok {
+		if err := validResponse.VisitGetStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"zJZvb9s2E8C/yoHPA6wFPMlpuhfzsBdunTbG1iVwMmBAU8QMebbYSCR3pJx6gb/7cKTi2rFTZEBa9B1F",
-	"Hu/v7466Fco13lm0MYjBrSAM3tmA6eOV1BP8u8UQ+Us5G9GmpfS+NkpG42z5MTjLe0FV2Ehe/Z9wJgbi",
-	"f+Vn1WU+DeURkSOxWq16QmNQZDwrEQNxXiFQNgZXTi/hRgYwdiFrowvB8p0KtjBUCn1EzWtPziNFk10O",
-	"tUse4ifZ+BrFQAxFT8Sl52WIZOxcsK4oYxu2BeWd0h35VU+wa4bY4vu7y71s7MNa3F19RBVZfY5yxzm8",
-	"2/6y/iy2T+8xyjpWZ2vn78W+Jyh3/dhw9tkb24AUNxjYNqhNima7kCNDqKKjJUQHnjCgjSADxApBSdI/",
-	"BOhICgWMcCbbOgaWvWj7/UP17uT1b5dvxn+d/zk5uhyNJ2kXy3zICc8bcFOhBdeYGFEXF3ZvkTsWtv2b",
-	"oNRIwIdgNNpoZgapB1jMC7gQwwtRiN6X+bmfwIcwmGDjFvhg+h7F6uNssZixM7cb7vH5+SkMT8cwc7Su",
-	"gbFz7rOzUfn6DX7iInGvpb3U2tIqLGBY10CujRhAEsICKRhnUUNrOYOl9KZcHBRwXplcU5IqgsmlDq4l",
-	"heBmEKmN1S/w1kElra6RAkirgSPIiudokWREDTNyDZgINyZW4KQ3PyqncY4Wnk0bef1ZdPq8q7mJKXEb",
-	"QQ1Px6InOmfFQBwU/aLP1XAerfRGDMRh0S8ORU94GatUiS6UUuOiNIn5VC0X9vLjHcUcpF6zPtWGpoy5",
-	"TAleg28sTLlm0wJObL0EuZCmlld1BzAr8eQUF4BaG3Lkk6Ph6Ghy+e5kdPRr49R1jpXRSSN3rLnNcJG7",
-	"U2RAMMRXTi+fbFBvt/5qm8NILaaNjcfiRf/Fkxlfz/c9D0V2zDgLdwO74Oq+7Pcf0rp2s9x40NKVn7/N",
-	"u5ZnTQBZE0q9BKdU603n+E/9g6/vxR8uMl/W2DkjyVBB4zR2L2vbNJKWYiDOTNPWMiLkLmDxDuhn6Q7l",
-	"4clXwdl6+Twr2OwfSkNvs392wM1z8SuBuz10vyNwk2OyfgJsX35bbLHxcfkds5qI+6+oVulX6h/2co57",
-	"MH2L8bgT2eGl/2RJ2Pqh25OLM6SFUchVaP39BPxuFmj55fDkrlJ6+BiJ3z4xeH8rWqrFQJRi9WH1bwAA",
-	"AP//",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

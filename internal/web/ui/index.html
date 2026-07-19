@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cardingest</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --fg: #1c2024; --muted: #6b7280;
+    --border: #e5e7eb; --accent: #2563eb; --ok: #16a34a; --err: #dc2626;
+    --bar: #dbeafe;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --panel: #171b22; --fg: #e6e8eb; --muted: #9aa4b2;
+      --border: #2a2f3a; --accent: #60a5fa; --ok: #4ade80; --err: #f87171;
+      --bar: #1e293b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px; background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 18px; letter-spacing: -0.02em; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  header .dot.live { background: var(--ok); }
+  main { max-width: 960px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--muted); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+  .stat { text-align: center; }
+  .stat .n { font-size: 24px; font-weight: 600; }
+  .stat .l { font-size: 12px; color: var(--muted); }
+  .slot { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+  .slot .name { font-weight: 600; width: 60px; }
+  .slot .state { font-size: 12px; color: var(--muted); width: 90px; }
+  .bar { flex: 1; height: 8px; background: var(--bar); border-radius: 6px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .slot .rate { font-size: 12px; color: var(--muted); width: 150px; text-align: right; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .badge { padding: 1px 8px; border-radius: 999px; font-size: 12px; }
+  .badge.complete { background: var(--bar); color: var(--accent); }
+  .badge.error { color: var(--err); border: 1px solid var(--err); }
+  .badge.running { color: var(--muted); border: 1px solid var(--border); }
+  textarea {
+    width: 100%; min-height: 260px; font: 13px/1.5 ui-monospace, Menlo, monospace;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; resize: vertical;
+  }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 8px 16px; font-size: 14px; cursor: pointer; margin-top: 12px;
+  }
+  .msg { margin-left: 12px; font-size: 13px; }
+  .msg.ok { color: var(--ok); }
+  .msg.err { color: var(--err); }
+  .empty { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="live-dot"></span>
+  <h1>cardingest</h1>
+  <span class="empty" id="conn">connecting…</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Statistics</h2>
+    <div class="stats" id="stats"><span class="empty">loading…</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>Live slots</h2>
+    <div id="slots"><span class="empty">no slots reported yet</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>Recent jobs</h2>
+    <div id="jobs"><span class="empty">loading…</span></div>
+  </section>
+
+  <section class="panel">
+    <h2>Ingest policy (YAML)</h2>
+    <textarea id="config" spellcheck="false"></textarea>
+    <div>
+      <button id="save">Save config</button>
+      <span class="msg" id="config-msg"></span>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtBytes = (b) => {
+  if (b == null) return "0 B";
+  const u = ["B","KiB","MiB","GiB","TiB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i === 0 ? b : b.toFixed(1)) + " " + u[i];
+};
+
+// ---- REST ----
+async function loadStats() {
+  const s = await (await fetch("/api/v1/stats")).json();
+  $("stats").innerHTML = [
+    ["Jobs", s.totalJobs], ["Complete", s.completeJobs], ["Errors", s.errorJobs],
+    ["Files copied", s.filesCopied], ["Bytes", fmtBytes(s.bytes)],
+  ].map(([l, n]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+}
+
+async function loadJobs() {
+  const jobs = await (await fetch("/api/v1/jobs?limit=25")).json();
+  if (!jobs || !jobs.length) { $("jobs").innerHTML = `<span class="empty">no jobs yet</span>`; return; }
+  const rows = jobs.map(j => {
+    const dur = j.finishedAt ? Math.round((new Date(j.finishedAt) - new Date(j.startedAt)) / 1000) + "s" : "—";
+    return `<tr>
+      <td>${j.slot}</td>
+      <td><span class="badge ${j.status}">${j.status}</span></td>
+      <td>${j.copied ?? 0}</td><td>${j.deduped ?? 0}</td><td>${j.skipped ?? 0}</td>
+      <td>${fmtBytes(j.bytes ?? 0)}</td>
+      <td>${new Date(j.startedAt).toLocaleTimeString()}</td>
+      <td>${dur}</td></tr>`;
+  }).join("");
+  $("jobs").innerHTML = `<table><thead><tr>
+    <th>Slot</th><th>Status</th><th>Copied</th><th>Deduped</th><th>Skipped</th>
+    <th>Bytes</th><th>Started</th><th>Duration</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function loadConfig() {
+  const c = await (await fetch("/api/v1/config")).json();
+  $("config").value = c.yaml || "";
+}
+
+$("save").onclick = async () => {
+  const msg = $("config-msg");
+  const res = await fetch("/api/v1/config", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ yaml: $("config").value }),
+  });
+  if (res.ok) { msg.textContent = "saved"; msg.className = "msg ok"; loadConfig(); }
+  else { const e = await res.json().catch(() => ({})); msg.textContent = e.error || "save failed"; msg.className = "msg err"; }
+};
+
+// ---- Live slots (SSE) ----
+const slots = {};        // slot -> {state, jobId}
+const progress = {};     // slot -> {bytes, at} for rate calc
+
+function renderSlots() {
+  const keys = Object.keys(slots).sort();
+  if (!keys.length) { $("slots").innerHTML = `<span class="empty">no slots reported yet</span>`; return; }
+  $("slots").innerHTML = keys.map(k => {
+    const s = slots[k], p = progress[k] || {};
+    const pct = p.total ? Math.min(100, Math.round(100 * p.filesDone / p.total)) : (s.state === "ingesting" ? 5 : 0);
+    return `<div class="slot">
+      <span class="name">${k}</span>
+      <span class="state">${s.state}</span>
+      <div class="bar"><div style="width:${pct}%"></div></div>
+      <span class="rate">${p.rate || ""}</span></div>`;
+  }).join("");
+}
+
+function onProgress(d) {
+  const now = Date.now();
+  const prev = progress[d.Slot];
+  let rate = "";
+  if (prev && now > prev.at) {
+    const mbps = ((d.BytesDone - prev.bytes) / 1024 / 1024) / ((now - prev.at) / 1000);
+    const remaining = d.TotalFiles - d.FilesDone;
+    rate = `${mbps.toFixed(1)} MiB/s · ${d.FilesDone}/${d.TotalFiles}`;
+    if (remaining > 0 && d.FilesDone > 0) {
+      // fallthrough: keep simple, files-based
+    }
+  } else {
+    rate = `${d.FilesDone}/${d.TotalFiles}`;
+  }
+  progress[d.Slot] = { bytes: d.BytesDone, at: now, filesDone: d.FilesDone, total: d.TotalFiles, rate };
+  renderSlots();
+}
+
+function connect() {
+  const es = new EventSource("/api/v1/events");
+  es.onopen = () => { $("live-dot").classList.add("live"); $("conn").textContent = "live"; };
+  es.onerror = () => { $("live-dot").classList.remove("live"); $("conn").textContent = "reconnecting…"; };
+
+  es.addEventListener("status", (e) => {
+    const arr = JSON.parse(e.data).data || [];
+    for (const s of arr) slots[s.slot] = { state: s.state, jobId: s.jobId };
+    renderSlots();
+  });
+  es.addEventListener("progress", (e) => onProgress(JSON.parse(e.data).data));
+  es.addEventListener("job_start", () => { loadStats(); });
+  es.addEventListener("job_complete", (e) => { delete progress[JSON.parse(e.data).slot]; loadStats(); loadJobs(); renderSlots(); });
+  es.addEventListener("job_error", () => { loadStats(); loadJobs(); });
+}
+
+loadStats(); loadJobs(); loadConfig(); connect();
+</script>
+</body>
+</html>

@@ -129,7 +129,7 @@ func TestIngestMockEndToEnd(t *testing.T) {
 		Store:      sqlite,
 		Categories: map[string][]string{"photos": {".arw", ".jpg"}},
 		Layout:     "{category}/{date}",
-		DateFn:     func(card.FileEntry) time.Time { return time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC) },
+		DateFn:     func(afero.Fs, card.FileEntry) time.Time { return time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC) },
 		Log:        log,
 	})
 

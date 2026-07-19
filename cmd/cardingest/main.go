@@ -17,11 +17,13 @@ import (
 	"github.com/michaelpeterswa/cardingest/internal/card"
 	"github.com/michaelpeterswa/cardingest/internal/config"
 	"github.com/michaelpeterswa/cardingest/internal/detect"
+	"github.com/michaelpeterswa/cardingest/internal/events"
 	"github.com/michaelpeterswa/cardingest/internal/exifdate"
 	"github.com/michaelpeterswa/cardingest/internal/logging"
 	"github.com/michaelpeterswa/cardingest/internal/mounter"
 	"github.com/michaelpeterswa/cardingest/internal/notify"
 	"github.com/michaelpeterswa/cardingest/internal/pipeline"
+	"github.com/michaelpeterswa/cardingest/internal/rules"
 	"github.com/michaelpeterswa/cardingest/internal/store"
 	"github.com/michaelpeterswa/cardingest/internal/web"
 	"github.com/spf13/afero"
@@ -114,13 +116,50 @@ func run(ctx context.Context, c *config.Config) error {
 	}
 	destFS := afero.NewBasePathFs(afero.NewOsFs(), destPath)
 
+	// Compile the ordered keep/skip rules from the policy config.
+	ruleEngine, err := rules.Compile(policy.Rules)
+	if err != nil {
+		return fmt.Errorf("compile rules: %w", err)
+	}
+
+	// Live-event hub: pipeline progress and app job events flow here and out to
+	// the UI via SSE.
+	hub := events.NewHub()
+
 	pipe := pipeline.New(pipeline.Deps{
 		Dest:       destFS,
 		Store:      hashStore,
+		Rules:      ruleEngine,
 		Categories: policy.Categories,
 		Layout:     policy.Destination.Layout,
-		DateFn:     func(f card.FileEntry) time.Time { t, _ := exifdate.DateOf(f); return t },
-		Log:        log,
+		DateFn:     func(fs afero.Fs, f card.FileEntry) time.Time { t, _ := exifdate.DateOf(fs, f); return t },
+		OnProgress: func(p pipeline.Progress) {
+			hub.Publish(events.Event{Type: "progress", Slot: p.Slot, Data: p})
+		},
+		Log: log,
+	})
+
+	// Notifiers from policy (empty => dev Logger). A misconfigured notifier is
+	// logged but never blocks ingest.
+	notifier, nerr := notify.Build(policy.Notify, log)
+	if nerr != nil {
+		log.Warn("some notifiers could not be built", slog.String("error", nerr.Error()))
+	}
+
+	application := app.New(app.Config{
+		Detector:  det,
+		Mounter:   mnt,
+		Pipeline:  pipe,
+		Notifier:  notifier,
+		MountRoot: c.MountRoot,
+		Policy: app.ErasePolicy{
+			EraseIngested: policy.Card.EraseIngested,
+			EraseSkipped:  policy.Card.EraseSkipped,
+			EjectWhenDone: policy.Card.EjectWhenDone,
+		},
+		Events: hub,
+		Jobs:   hashStore,
+		Log:    log,
 	})
 
 	// The mock detector doubles as the web dev-trigger controller.
@@ -129,10 +168,17 @@ func run(ctx context.Context, c *config.Config) error {
 		mockCtl = mc
 	}
 
-	// HTTP API server.
+	// HTTP API + UI server.
 	httpSrv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", c.HTTPPort),
-		Handler:           web.NewServer(log, mockCtl).Handler(),
+		Addr: fmt.Sprintf(":%d", c.HTTPPort),
+		Handler: web.NewServer(web.Deps{
+			Log:    log,
+			Mock:   mockCtl,
+			Jobs:   hashStore,
+			Config: policyStore,
+			Status: application,
+			Events: hub,
+		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -146,20 +192,6 @@ func run(ctx context.Context, c *config.Config) error {
 		defer cancel()
 		_ = httpSrv.Shutdown(shutCtx)
 	}()
-
-	application := app.New(app.Config{
-		Detector:  det,
-		Mounter:   mnt,
-		Pipeline:  pipe,
-		Notifier:  notify.Logger{Log: log},
-		MountRoot: c.MountRoot,
-		Policy: app.ErasePolicy{
-			EraseIngested: policy.Card.EraseIngested,
-			EraseSkipped:  policy.Card.EraseSkipped,
-			EjectWhenDone: policy.Card.EjectWhenDone,
-		},
-		Log: log,
-	})
 
 	log.Info("cardingest starting", slog.String("mode", string(c.ReaderMode)))
 	return application.Run(ctx)

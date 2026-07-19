@@ -42,6 +42,11 @@ reader:
     - "174c:2362"               # CFexpress slot (ASMedia bridge, UAS)
 
 notify:
-  - type: ntfy
-    url: https://ntfy.example/ingest
+  # pulsar-notification-pipeline writer. The bearer token is NOT stored here;
+  # it is read from the env var named by token_env (see NOTIFY_PULSAR_TOKEN).
+  - type: pulsar
+    url: http://writer:8080
+    user_key: "REPLACE_WITH_30CHAR_PUSHOVER_KEY"
+    priority: 0
+    token_env: NOTIFY_PULSAR_TOKEN
     "on": [complete, error]

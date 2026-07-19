@@ -28,7 +28,10 @@ func (f *fakeMock) Insert(slot card.Slot, _ string) error {
 func (f *fakeMock) Remove(card.Slot) error { return f.removeErr }
 
 func newTestServer(mock MockController) http.Handler {
-	return NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), mock).Handler()
+	return NewServer(Deps{
+		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Mock: mock,
+	}).Handler()
 }
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
