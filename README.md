@@ -80,6 +80,10 @@ curl -XPOST localhost:8080/api/v1/dev/insert \
 
 ### Deploy the appliance (Linux)
 
+For a real install, use the systemd units in [`deploy/`](deploy/DEPLOY.md) — they
+mount the NAS **before** the container starts and arm an in-app safety guard, so
+cards are never erased against an unmounted destination. Quick manual start:
+
 ```bash
 docker compose -f docker-compose.appliance.yml up -d
 ```

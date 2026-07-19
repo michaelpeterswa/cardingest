@@ -1,0 +1,29 @@
+# systemd mount unit for the cardingest NAS ingest share (NFS).
+#
+# The unit FILENAME must match the escaped mount path:
+#   /mnt/nas/ingest  ->  mnt-nas-ingest.mount
+# If you mount elsewhere, rename the file to match (systemd-escape -p --suffix=mount /your/path).
+#
+# Install:
+#   sudo cp deploy/mnt-nas-ingest.mount /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mnt-nas-ingest.mount
+
+[Unit]
+Description=cardingest NAS ingest share (NFS)
+After=network-online.target
+Wants=network-online.target
+
+[Mount]
+What=nas.local:/export/ingest
+Where=/mnt/nas/ingest
+Type=nfs
+# _netdev: network filesystem, ordered after the network is up.
+# hard:    block on a NAS outage rather than let a partial write be reported as
+#          success. cardingest verifies read-back and only erases after, so a
+#          blocked write never loses data; a "soft" mount could.
+# noatime: no access-time writes (read-heavy ingest source, write-heavy dest).
+Options=_netdev,noatime,hard
+
+[Install]
+WantedBy=remote-fs.target

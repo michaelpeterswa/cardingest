@@ -28,6 +28,13 @@ type Destination struct {
 	Path       string `yaml:"path"`
 	Layout     string `yaml:"layout"`
 	DateSource string `yaml:"date_source"`
+
+	// Marker is a sentinel filename that must exist on the destination for
+	// ingest to proceed. It guards against the destination bind-mount capturing
+	// an empty mountpoint when the NAS share isn't mounted (which would write to
+	// local disk and let cards be erased against a non-durable copy). Empty
+	// disables the check (e.g. local dev). See deploy/DEPLOY.md.
+	Marker string `yaml:"marker,omitempty"`
 }
 
 // Rule is one ordered match/action entry. The final entry in the spec's YAML is

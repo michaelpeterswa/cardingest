@@ -6,6 +6,9 @@ destination:
   path: /data/dest              # bind-mounted NAS share
   layout: "{category}/{date}"   # -> photos/2026-07-18/DSC01234.ARW
   date_source: exif_then_mtime
+  # Sentinel that must exist on the NAS for ingest to proceed. Create it once:
+  #   touch /mnt/nas/ingest/.cardingest-ok   (see deploy/DEPLOY.md)
+  marker: .cardingest-ok
 
 categories:
   photos: [".arw", ".dng", ".jpg", ".jpeg"]

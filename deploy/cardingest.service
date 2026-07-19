@@ -1,0 +1,34 @@
+# systemd service that runs the cardingest container stack, ordered so it only
+# starts once Docker AND the NAS share are up.
+#
+# Requires= (not just After=) means: if the NAS mount fails, this service does
+# NOT start — no ingest without a durable destination.
+#
+# --force-recreate guarantees the container's NAS bind-mount is established
+# AFTER the share is mounted, closing the race where Docker's own restart policy
+# starts a container against an empty mountpoint at daemon boot. (The in-app
+# destination-marker guard is the ultimate backstop either way.)
+#
+# Install:
+#   sudo mkdir -p /opt/cardingest && sudo rsync -a ./ /opt/cardingest/   # repo + config/ + state/
+#   sudo cp deploy/cardingest.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cardingest.service
+
+[Unit]
+Description=cardingest SD/CFexpress ingest appliance
+Requires=docker.service mnt-nas-ingest.mount
+After=docker.service mnt-nas-ingest.mount network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/cardingest
+# Optional: bearer token for the notification writer (config notify.token_env).
+EnvironmentFile=-/etc/cardingest/cardingest.env
+ExecStartPre=/usr/bin/docker compose -f docker-compose.appliance.yml pull --quiet
+ExecStart=/usr/bin/docker compose -f docker-compose.appliance.yml up -d --force-recreate --remove-orphans
+ExecStop=/usr/bin/docker compose -f docker-compose.appliance.yml down
+
+[Install]
+WantedBy=multi-user.target

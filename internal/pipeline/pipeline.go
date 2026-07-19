@@ -68,7 +68,12 @@ type Deps struct {
 	Layout     string                                   // e.g. "{category}/{date}"
 	DateFn     func(afero.Fs, card.FileEntry) time.Time // foldering date for a file (may read the file)
 	OnProgress func(Progress)                           // optional live progress callback
-	Log        *slog.Logger
+
+	// RequireMarker, if non-empty, is a sentinel filename that must exist on
+	// Dest before any file is copied. It proves the destination is the mounted
+	// NAS and not an empty local mountpoint. Empty disables the check.
+	RequireMarker string
+	Log           *slog.Logger
 }
 
 // Pipeline ingests cards. Safe for concurrent use across slots.
@@ -114,6 +119,14 @@ type Result struct {
 // each by reading it back. The card is never modified here.
 func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 	res := Result{ByCategory: map[string]int{}}
+
+	// Safety gate: never write to (and thus never erase a card against) a
+	// destination that isn't the mounted NAS. Fatal so the card is left intact.
+	if p.deps.RequireMarker != "" {
+		if ok, err := afero.Exists(p.deps.Dest, p.deps.RequireMarker); err != nil || !ok {
+			return res, fatal(fmt.Errorf("destination marker %q missing — is the NAS mounted?", p.deps.RequireMarker))
+		}
+	}
 
 	entries, err := scan(in.CardFS)
 	if err != nil {

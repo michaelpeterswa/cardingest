@@ -233,6 +233,43 @@ func TestIngestAbortsOnDestFailure(t *testing.T) {
 	}
 }
 
+func TestRequireMarkerBlocksIngestWhenAbsent(t *testing.T) {
+	ctx := context.Background()
+	cardFS := afero.NewMemMapFs()
+	writeCard(t, cardFS, map[string]string{"DCIM/a.ARW": "x"})
+	dest := afero.NewMemMapFs()
+
+	p := New(Deps{
+		Dest:          dest,
+		Store:         store.Noop{},
+		Categories:    map[string][]string{"photos": {".arw"}},
+		RequireMarker: ".cardingest-ok",
+		DateFn:        func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
+		Log:           testLogger(),
+	})
+
+	// Marker missing: ingest must abort and copy nothing (card left intact).
+	res, err := p.Ingest(ctx, Input{Slot: card.SlotA, Serial: "c", CardFS: cardFS})
+	if err == nil {
+		t.Fatal("ingest should fail when the destination marker is absent")
+	}
+	if res.Copied != 0 || len(res.Verified) != 0 {
+		t.Fatalf("nothing should be copied/verified: %+v", res)
+	}
+
+	// With the marker present, ingest proceeds.
+	if err := afero.WriteFile(dest, ".cardingest-ok", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = p.Ingest(ctx, Input{Slot: card.SlotA, Serial: "c", CardFS: cardFS})
+	if err != nil {
+		t.Fatalf("ingest with marker present: %v", err)
+	}
+	if res.Copied != 1 {
+		t.Fatalf("copied = %d, want 1", res.Copied)
+	}
+}
+
 func TestEraseRemovesOnlyListedPaths(t *testing.T) {
 	ctx := context.Background()
 	cardFS := afero.NewMemMapFs()
