@@ -17,6 +17,7 @@ import (
 	"github.com/michaelpeterswa/cardingest/internal/card"
 	"github.com/michaelpeterswa/cardingest/internal/config"
 	"github.com/michaelpeterswa/cardingest/internal/detect"
+	"github.com/michaelpeterswa/cardingest/internal/events"
 	"github.com/michaelpeterswa/cardingest/internal/exifdate"
 	"github.com/michaelpeterswa/cardingest/internal/logging"
 	"github.com/michaelpeterswa/cardingest/internal/mounter"
@@ -121,6 +122,10 @@ func run(ctx context.Context, c *config.Config) error {
 		return fmt.Errorf("compile rules: %w", err)
 	}
 
+	// Live-event hub: pipeline progress and app job events flow here and out to
+	// the UI via SSE.
+	hub := events.NewHub()
+
 	pipe := pipeline.New(pipeline.Deps{
 		Dest:       destFS,
 		Store:      hashStore,
@@ -128,32 +133,11 @@ func run(ctx context.Context, c *config.Config) error {
 		Categories: policy.Categories,
 		Layout:     policy.Destination.Layout,
 		DateFn:     func(f card.FileEntry) time.Time { t, _ := exifdate.DateOf(f); return t },
-		Log:        log,
+		OnProgress: func(p pipeline.Progress) {
+			hub.Publish(events.Event{Type: "progress", Slot: p.Slot, Data: p})
+		},
+		Log: log,
 	})
-
-	// The mock detector doubles as the web dev-trigger controller.
-	var mockCtl web.MockController
-	if mc, ok := det.(web.MockController); ok {
-		mockCtl = mc
-	}
-
-	// HTTP API server.
-	httpSrv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", c.HTTPPort),
-		Handler:           web.NewServer(log, mockCtl).Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() {
-		log.Info("http api listening", slog.Int("port", c.HTTPPort))
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("http server error", slog.String("error", err.Error()))
-		}
-	}()
-	defer func() {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shutCtx)
-	}()
 
 	// Notifiers from policy (empty => dev Logger). A misconfigured notifier is
 	// logged but never blocks ingest.
@@ -173,8 +157,41 @@ func run(ctx context.Context, c *config.Config) error {
 			EraseSkipped:  policy.Card.EraseSkipped,
 			EjectWhenDone: policy.Card.EjectWhenDone,
 		},
-		Log: log,
+		Events: hub,
+		Jobs:   hashStore,
+		Log:    log,
 	})
+
+	// The mock detector doubles as the web dev-trigger controller.
+	var mockCtl web.MockController
+	if mc, ok := det.(web.MockController); ok {
+		mockCtl = mc
+	}
+
+	// HTTP API + UI server.
+	httpSrv := &http.Server{
+		Addr: fmt.Sprintf(":%d", c.HTTPPort),
+		Handler: web.NewServer(web.Deps{
+			Log:    log,
+			Mock:   mockCtl,
+			Jobs:   hashStore,
+			Config: policyStore,
+			Status: application,
+			Events: hub,
+		}).Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Info("http api listening", slog.Int("port", c.HTTPPort))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("http server error", slog.String("error", err.Error()))
+		}
+	}()
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	}()
 
 	log.Info("cardingest starting", slog.String("mode", string(c.ReaderMode)))
 	return application.Run(ctx)

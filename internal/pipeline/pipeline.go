@@ -33,6 +33,16 @@ import (
 // tmpDir is where in-flight copies land on the destination before verification.
 const tmpDir = ".cardingest-tmp"
 
+// Progress is a live snapshot emitted during Ingest for the UI's progress bar.
+type Progress struct {
+	Slot        string
+	FilesDone   int
+	TotalFiles  int
+	BytesDone   int64
+	TotalBytes  int64
+	CurrentFile string
+}
+
 // Deps are the pipeline's collaborators, fixed for the process lifetime.
 type Deps struct {
 	Dest       afero.Fs                       // destination (NAS) root
@@ -41,6 +51,7 @@ type Deps struct {
 	Categories map[string][]string            // category -> extensions ("*" = catch-all)
 	Layout     string                         // e.g. "{category}/{date}"
 	DateFn     func(card.FileEntry) time.Time // foldering date for a file
+	OnProgress func(Progress)                 // optional live progress callback
 	Log        *slog.Logger
 }
 
@@ -91,10 +102,16 @@ func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 		return res, fmt.Errorf("scan card: %w", err)
 	}
 
+	var totalBytes int64
 	for _, e := range entries {
+		totalBytes += e.Size
+	}
+
+	for i, e := range entries {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
+		p.emitProgress(in.Slot, i, len(entries), res.BytesCopied, totalBytes, e.Path)
 
 		if p.deps.Rules.Decide(e) == rules.Skip {
 			res.Skipped++
@@ -125,6 +142,8 @@ func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 		res.Verified = append(res.Verified, e.Path)
 	}
 
+	p.emitProgress(in.Slot, len(entries), len(entries), res.BytesCopied, totalBytes, "")
+
 	p.deps.Log.Info("pipeline: ingest complete",
 		slog.String("slot", string(in.Slot)),
 		slog.String("serial", in.Serial),
@@ -134,6 +153,20 @@ func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 		slog.Int64("bytes", res.BytesCopied),
 	)
 	return res, nil
+}
+
+func (p *Pipeline) emitProgress(slot card.Slot, filesDone, totalFiles int, bytesDone, totalBytes int64, current string) {
+	if p.deps.OnProgress == nil {
+		return
+	}
+	p.deps.OnProgress(Progress{
+		Slot:        string(slot),
+		FilesDone:   filesDone,
+		TotalFiles:  totalFiles,
+		BytesDone:   bytesDone,
+		TotalBytes:  totalBytes,
+		CurrentFile: current,
+	})
 }
 
 // copyAndVerify streams one file card→destination temp while hashing, dedupes

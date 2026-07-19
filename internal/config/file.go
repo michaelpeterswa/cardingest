@@ -120,6 +120,21 @@ func (s *Store) Get() File {
 	return s.file
 }
 
+// Marshal returns the current policy serialised as YAML (for the config API).
+func (s *Store) Marshal() ([]byte, error) {
+	return yaml.Marshal(s.Get())
+}
+
+// ParseFile parses YAML into a File without persisting it. Callers validate
+// (e.g. rules.Compile) before saving.
+func ParseFile(data []byte) (File, error) {
+	var f File
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return File{}, fmt.Errorf("parse config: %w", err)
+	}
+	return f, nil
+}
+
 // Save atomically persists f (write to a temp file in the same directory, then
 // rename) and updates the in-memory snapshot.
 func (s *Store) Save(f File) error {

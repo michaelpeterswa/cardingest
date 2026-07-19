@@ -35,6 +35,20 @@ func OpenSQLite(path string) (*SQLite, error) {
 		CREATE TABLE IF NOT EXISTS verified_hashes (
 			hash       TEXT PRIMARY KEY,
 			created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+		);
+		CREATE TABLE IF NOT EXISTS jobs (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			slot        TEXT NOT NULL,
+			serial      TEXT NOT NULL,
+			status      TEXT NOT NULL,
+			copied      INTEGER NOT NULL DEFAULT 0,
+			deduped     INTEGER NOT NULL DEFAULT 0,
+			skipped     INTEGER NOT NULL DEFAULT 0,
+			erased      INTEGER NOT NULL DEFAULT 0,
+			bytes       INTEGER NOT NULL DEFAULT 0,
+			err         TEXT NOT NULL DEFAULT '',
+			started_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+			finished_at INTEGER
 		)`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)

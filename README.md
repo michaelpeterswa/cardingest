@@ -7,12 +7,14 @@ by reading it back, then erases the ingested originals from the card.
 
 See [INSTRUCTIONS.md](INSTRUCTIONS.md) for the full specification.
 
-> **Status:** Milestone 4 — completion/error notifications with job stats,
-> delivered to the [pulsar-notification-pipeline](https://github.com/michaelpeterswa/pulsar-notifcation-pipeline)
-> writer (the only backend today; the `Notifier` interface + `notify.Build`
-> factory make new backends drop-in). Built on the M1–M3 detect/mount, copy →
-> verify → erase pipeline with SQLite idempotence, and the ordered rules engine.
-> Real EXIF/MP4 dating and the web UI land in later milestones.
+> **Status:** Milestone 5 — the embedded web UI is in. A `go:embed` single-page
+> UI (served at `/`) shows live stats, per-slot progress, and job history, and
+> round-trips the YAML policy. It's backed by REST (`/api/v1/jobs`, `stats`,
+> `status`, `config`) and a hand-written SSE stream (`/api/v1/events`) fed by a
+> job-history table in SQLite and a live pipeline progress callback. This
+> completes the M1–M4 core (detect/mount, copy → verify → erase with SQLite
+> idempotence, the ordered rules engine, and notifications). Remaining polish:
+> real EXIF/MP4 dating and per-file ingest resilience.
 
 ## How it runs
 
@@ -104,9 +106,13 @@ Starts the app plus the Grafana LGTM (Loki, Grafana, Tempo, Mimir) stack:
 │   ├── detect/              # /dev poller, USB matching, per-slot state (real + mock)
 │   ├── mounter/             # mount ro → rw → eject lifecycle (real + fake)
 │   ├── app/                 # orchestrator: per-slot ingest workers
-│   ├── pipeline/            # scan/copy/verify/erase  (stub in M1)
-│   ├── rules/ exifdate/ store/ notify/   # stubs in M1
-│   └── web/                 # HTTP server + generated /api/v1 handlers
+│   ├── pipeline/            # scan → rules → copy → verify → erase
+│   ├── rules/               # ordered keep/skip engine
+│   ├── store/               # SQLite: hash index + job history/stats
+│   ├── notify/              # pulsar notifier (extensible)
+│   ├── events/              # in-process pub/sub for live SSE
+│   ├── exifdate/            # capture-date extraction (mtime today)
+│   └── web/                 # REST + SSE + go:embed UI (web/ui/)
 ├── Dockerfile               # multi-stage distroless build
 ├── docker-compose.yml       # dev + observability stack
 └── docker-compose.appliance.yml   # production deployment
