@@ -29,7 +29,9 @@ func (s *Server) sseHandler() http.Handler {
 		ch, cancel := s.deps.Events.Subscribe()
 		defer cancel()
 
-		fmt.Fprint(w, ": connected\n\n")
+		if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+			return
+		}
 		flusher.Flush()
 
 		ping := time.NewTicker(15 * time.Second)
@@ -41,7 +43,9 @@ func (s *Server) sseHandler() http.Handler {
 			case <-ctx.Done():
 				return
 			case <-ping.C:
-				fmt.Fprint(w, ": ping\n\n")
+				if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+					return // client disconnected
+				}
 				flusher.Flush()
 			case ev, ok := <-ch:
 				if !ok {
@@ -51,7 +55,9 @@ func (s *Server) sseHandler() http.Handler {
 				if err != nil {
 					continue
 				}
-				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
+				if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b); err != nil {
+					return // client disconnected
+				}
 				flusher.Flush()
 			}
 		}
