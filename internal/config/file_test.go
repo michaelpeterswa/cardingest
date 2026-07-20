@@ -24,7 +24,7 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 
 	want := File{
 		Destination: Destination{Path: "/data/dest", Layout: "{category}/{date}", DateSource: "exif_then_mtime"},
-		Categories:  map[string][]string{"photos": {".arw", ".jpg"}},
+		Categories:  map[string]Category{"photos": {Ext: []string{".arw", ".jpg"}}},
 		Reader:      Reader{USBIDs: []string{"05dc:b054"}},
 		Card:        CardPolicy{EraseIngested: true, EjectWhenDone: true},
 	}
@@ -46,6 +46,30 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 	}
 	if !got.Card.EraseIngested || !got.Card.EjectWhenDone {
 		t.Fatalf("card policy round-trip failed: %+v", got.Card)
+	}
+	if c := got.Categories["photos"]; len(c.Ext) != 2 || c.Ext[0] != ".arw" {
+		t.Fatalf("category round-trip failed: %+v", c)
+	}
+}
+
+func TestCategoryShorthandUnmarshal(t *testing.T) {
+	// The bare-list shorthand and the full struct form both parse.
+	yamlText := "" +
+		"categories:\n" +
+		"  jpeg: [\".jpg\", \".jpeg\"]\n" +
+		"  raw:\n" +
+		"    ext: [\".arw\"]\n" +
+		"    dest: /data/lightroom\n" +
+		"    layout: \"{year}/{date}\"\n"
+	f, err := ParseFile([]byte(yamlText))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if got := f.Categories["jpeg"]; len(got.Ext) != 2 || got.Ext[0] != ".jpg" || got.Dest != "" {
+		t.Fatalf("shorthand category = %+v", got)
+	}
+	if got := f.Categories["raw"]; got.Dest != "/data/lightroom" || got.Layout != "{year}/{date}" || got.Ext[0] != ".arw" {
+		t.Fatalf("struct category = %+v", got)
 	}
 }
 

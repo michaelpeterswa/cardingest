@@ -53,13 +53,21 @@ systemctl status mnt-nas-ingest.mount        # should be "active (mounted)"
 mountpoint /mnt/nas/ingest                    # should say "is a mountpoint"
 ```
 
-## 2. Arm the safety marker (once)
+> **Multiple destination shares.** cardingest can route categories to different
+> shares (e.g. RAW → a Lightroom share, JPEG → another) via `categories.*.dest`
+> in the config. Each share is its **own** host mount, its own `.mount` unit,
+> its own marker file, and its own bind in `docker-compose.appliance.yml`. Repeat
+> steps 1–2 for every share, add it to `Requires=`/`After=` in
+> `cardingest.service`, and add the bind mount.
 
-Create the sentinel **on the NAS share** so it only exists when the share is
+## 2. Arm the safety marker (once per share)
+
+Create the sentinel **on each share** so it only exists when that share is
 mounted:
 
 ```bash
 sudo touch /mnt/nas/ingest/.cardingest-ok
+sudo touch /mnt/nas/lightroom/.cardingest-ok   # if you route RAW to a 2nd share
 ```
 
 (You can also create it from the NAS's own file manager. If you rename it, update

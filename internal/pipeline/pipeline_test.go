@@ -21,12 +21,13 @@ var fixedDate = time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 
 func newTestPipeline(dest afero.Fs, st store.Store) *Pipeline {
 	return New(Deps{
-		Dest:       dest,
-		Store:      st,
-		Categories: map[string][]string{"photos": {".arw", ".jpg"}, "video": {".mp4"}},
-		Layout:     "{category}/{date}",
-		DateFn:     func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
-		Log:        testLogger(),
+		Routes: []Route{
+			{Category: "photos", Exts: []string{".arw", ".jpg"}, Dest: dest, Layout: "{category}/{date}"},
+			{Category: "video", Exts: []string{".mp4"}, Dest: dest, Layout: "{category}/{date}"},
+		},
+		Store:  st,
+		DateFn: func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
+		Log:    testLogger(),
 	})
 }
 
@@ -145,13 +146,11 @@ func TestIngestHonorsRules(t *testing.T) {
 	})
 	dest := afero.NewMemMapFs()
 	p := New(Deps{
-		Dest:       dest,
-		Store:      store.Noop{},
-		Rules:      eng,
-		Categories: map[string][]string{"photos": {".arw", ".jpg"}},
-		Layout:     "{category}/{date}",
-		DateFn:     func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
-		Log:        testLogger(),
+		Routes: []Route{{Category: "photos", Exts: []string{".arw", ".jpg"}, Dest: dest, Layout: "{category}/{date}"}},
+		Store:  store.Noop{},
+		Rules:  eng,
+		DateFn: func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
+		Log:    testLogger(),
 	})
 
 	res, err := p.Ingest(ctx, Input{Slot: card.SlotA, Serial: "c", CardFS: cardFS})
@@ -240,12 +239,11 @@ func TestRequireMarkerBlocksIngestWhenAbsent(t *testing.T) {
 	dest := afero.NewMemMapFs()
 
 	p := New(Deps{
-		Dest:          dest,
-		Store:         store.Noop{},
-		Categories:    map[string][]string{"photos": {".arw"}},
-		RequireMarker: ".cardingest-ok",
-		DateFn:        func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
-		Log:           testLogger(),
+		Routes: []Route{{Category: "photos", Exts: []string{".arw"}, Dest: dest,
+			Layout: "{category}/{date}", Marker: ".cardingest-ok"}},
+		Store:  store.Noop{},
+		DateFn: func(afero.Fs, card.FileEntry) time.Time { return fixedDate },
+		Log:    testLogger(),
 	})
 
 	// Marker missing: ingest must abort and copy nothing (card left intact).
@@ -267,6 +265,59 @@ func TestRequireMarkerBlocksIngestWhenAbsent(t *testing.T) {
 	}
 	if res.Copied != 1 {
 		t.Fatalf("copied = %d, want 1", res.Copied)
+	}
+}
+
+func TestRoutesSendCategoriesToDifferentDests(t *testing.T) {
+	ctx := context.Background()
+	cardFS := afero.NewMemMapFs()
+	writeCard(t, cardFS, map[string]string{
+		"DCIM/GUH09283.ARW": "raw",
+		"DCIM/GUH09283.JPG": "jpeg",
+	})
+	lightroom := afero.NewMemMapFs() // raw share, nested {year}/{date}
+	jpegShare := afero.NewMemMapFs() // jpeg share, flat {date}
+
+	p := New(Deps{
+		Routes: []Route{
+			{Category: "raw", Exts: []string{".arw"}, Dest: lightroom, Layout: "{year}/{date}"},
+			{Category: "jpeg", Exts: []string{".jpg"}, Dest: jpegShare, Layout: "{date}"},
+		},
+		Store:  store.Noop{},
+		DateFn: func(afero.Fs, card.FileEntry) time.Time { return time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC) },
+		Log:    testLogger(),
+	})
+
+	if _, err := p.Ingest(ctx, Input{Slot: card.SlotA, Serial: "c", CardFS: cardFS}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// RAW lands on the lightroom share at {year}/{date} — matching
+	// smb://.../lightroom/2026/2026-07-04/GUH09283.ARW
+	if ok, _ := afero.Exists(lightroom, "2026/2026-07-04/GUH09283.ARW"); !ok {
+		t.Fatal("raw did not land at lightroom/2026/2026-07-04/")
+	}
+	// JPEG lands on the other share, and NOT on the lightroom share.
+	if ok, _ := afero.Exists(jpegShare, "2026-07-04/GUH09283.JPG"); !ok {
+		t.Fatal("jpeg did not land on the jpeg share")
+	}
+	if ok, _ := afero.Exists(lightroom, "2026/2026-07-04/GUH09283.JPG"); ok {
+		t.Fatal("jpeg must not land on the lightroom share")
+	}
+}
+
+func TestDestPathTokens(t *testing.T) {
+	d := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
+	cases := map[string]string{
+		"{year}/{date}":           "2026/2026-07-04/X.ARW",
+		"{category}/{date}":       "raw/2026-07-04/X.ARW",
+		"{year}/{month}/{day}":    "2026/07/04/X.ARW",
+		"{category}/{year}/{day}": "raw/2026/04/X.ARW",
+	}
+	for layout, want := range cases {
+		if got := destPath(layout, "raw", d, "X.ARW"); got != want {
+			t.Errorf("destPath(%q) = %q, want %q", layout, got, want)
+		}
 	}
 }
 

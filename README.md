@@ -52,9 +52,28 @@ variables:
 | `TRACING_SAMPLERATE` | Trace sampling rate | `0.01` |
 | `TRACING_SERVICE` | Service name for traces | `cardingest` |
 
-Runtime **policy** (destination layout, categories, rules, reader USB IDs,
-notifiers) lives in the YAML file at `CONFIG_PATH` and is edited by the web UI.
-See [INSTRUCTIONS.md](INSTRUCTIONS.md) for its schema.
+Runtime **policy** (destinations, categories, rules, reader USB IDs, notifiers)
+lives in the YAML file at `CONFIG_PATH` and is edited by the web UI. See
+[INSTRUCTIONS.md](INSTRUCTIONS.md) for its schema.
+
+Each **category** can route to its own share and folder layout, so e.g. RAW
+files go to a Lightroom share in Lightroom's nested date convention while JPEGs
+land elsewhere:
+
+```yaml
+destination:
+  path: /data/dest                    # default share
+  layout: "{category}/{year}/{date}"
+categories:
+  raw:
+    ext: [".arw", ".dng", ".cr2", ".nef"]
+    dest: /data/lightroom             # a different bind-mounted share
+    layout: "{year}/{date}"           # -> lightroom/2026/2026-07-04/GUH09283.ARW
+  jpeg: [".jpg", ".jpeg"]             # -> /data/dest/jpeg/2026/2026-07-04/…
+```
+
+Layout tokens: `{category}`, `{year}`, `{month}`, `{day}`, `{date}` (YYYY-MM-DD).
+Each distinct share is checked for its own mount marker before any write.
 
 ## API
 

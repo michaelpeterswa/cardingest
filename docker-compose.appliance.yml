@@ -23,9 +23,12 @@ services:
       # Bearer token for the pulsar notification writer (see config notify).
       NOTIFY_PULSAR_TOKEN: "${NOTIFY_PULSAR_TOKEN:-}"
     volumes:
-      - /dev:/dev                     # hotplugged sdX nodes must be visible
-      - /mnt/nas/ingest:/data/dest    # host-mounted NFS share
+      - /dev:/dev  # hotplugged sdX nodes must be visible
+      # One bind per destination share (see config categories.*.dest). Each is
+      # its own host mount + marker file (deploy/DEPLOY.md).
+      - /mnt/nas/ingest:/data/dest          # default share (jpeg/video/other)
+      - /mnt/nas/lightroom:/data/lightroom  # RAW share
       - ./config:/config
-      - ./state:/state                # SQLite: jobs, files, hash index
+      - ./state:/state                     # SQLite: jobs, files, hash index
     ports:
       - "8080:8080"

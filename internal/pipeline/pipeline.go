@@ -59,21 +59,25 @@ type Progress struct {
 	CurrentFile string
 }
 
+// Route sends one category of files to its own destination, layout, and marker.
+// Different categories can land on different shares (e.g. RAW to a Lightroom
+// share, JPEG elsewhere).
+type Route struct {
+	Category string   // name, for logging / stats
+	Exts     []string // extensions incl. dot; "*" = catch-all
+	Dest     afero.Fs // where this category's files land
+	Layout   string   // path template, e.g. "{year}/{date}"
+	Marker   string   // NAS-mounted sentinel that must exist on Dest (empty = off)
+}
+
 // Deps are the pipeline's collaborators, fixed for the process lifetime.
 type Deps struct {
-	Dest       afero.Fs                                 // destination (NAS) root
+	Routes     []Route                                  // per-category destinations
 	Store      store.Store                              // verified-hash index
 	Rules      rules.Engine                             // keep/skip decision
-	Categories map[string][]string                      // category -> extensions ("*" = catch-all)
-	Layout     string                                   // e.g. "{category}/{date}"
 	DateFn     func(afero.Fs, card.FileEntry) time.Time // foldering date for a file (may read the file)
 	OnProgress func(Progress)                           // optional live progress callback
-
-	// RequireMarker, if non-empty, is a sentinel filename that must exist on
-	// Dest before any file is copied. It proves the destination is the mounted
-	// NAS and not an empty local mountpoint. Empty disables the check.
-	RequireMarker string
-	Log           *slog.Logger
+	Log        *slog.Logger
 }
 
 // Pipeline ingests cards. Safe for concurrent use across slots.
@@ -83,16 +87,38 @@ type Pipeline struct {
 }
 
 func New(deps Deps) *Pipeline {
-	if deps.Layout == "" {
-		deps.Layout = "{category}/{date}"
-	}
 	if deps.DateFn == nil {
 		deps.DateFn = func(_ afero.Fs, f card.FileEntry) time.Time { return f.ModTime }
 	}
 	if deps.Rules == nil {
 		deps.Rules = rules.KeepAll{}
 	}
+	for i := range deps.Routes {
+		if deps.Routes[i].Layout == "" {
+			deps.Routes[i].Layout = "{category}/{date}"
+		}
+	}
 	return &Pipeline{deps: deps}
+}
+
+// routeFor picks the destination for a file by extension: an exact match wins,
+// otherwise a "*" catch-all route, otherwise nil (the file is skipped).
+func (p *Pipeline) routeFor(name string) *Route {
+	ext := strings.ToLower(filepath.Ext(name))
+	var catchAll *Route
+	for i := range p.deps.Routes {
+		r := &p.deps.Routes[i]
+		for _, e := range r.Exts {
+			if e == "*" {
+				catchAll = r
+				continue
+			}
+			if strings.ToLower(e) == ext {
+				return r
+			}
+		}
+	}
+	return catchAll
 }
 
 // Input is one card to ingest.
@@ -120,14 +146,6 @@ type Result struct {
 func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 	res := Result{ByCategory: map[string]int{}}
 
-	// Safety gate: never write to (and thus never erase a card against) a
-	// destination that isn't the mounted NAS. Fatal so the card is left intact.
-	if p.deps.RequireMarker != "" {
-		if ok, err := afero.Exists(p.deps.Dest, p.deps.RequireMarker); err != nil || !ok {
-			return res, fatal(fmt.Errorf("destination marker %q missing — is the NAS mounted?", p.deps.RequireMarker))
-		}
-	}
-
 	entries, err := scan(in.CardFS)
 	if err != nil {
 		return res, fmt.Errorf("scan card: %w", err)
@@ -137,6 +155,8 @@ func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 	for _, e := range entries {
 		totalBytes += e.Size
 	}
+
+	markerOK := map[string]bool{} // route category -> marker verified this job
 
 	for i, e := range entries {
 		if err := ctx.Err(); err != nil {
@@ -149,14 +169,24 @@ func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 			res.SkippedPath = append(res.SkippedPath, e.Path)
 			continue
 		}
-		category, ok := categorize(e.Path, p.deps.Categories)
-		if !ok {
+		route := p.routeFor(e.Path)
+		if route == nil {
 			res.Skipped++
 			res.SkippedPath = append(res.SkippedPath, e.Path)
 			continue
 		}
 
-		copied, err := p.copyAndVerify(ctx, in, e, category)
+		// Safety gate: never write to (and thus erase a card against) a share
+		// that isn't mounted. Checked once per destination per job, fatal so the
+		// card is left intact.
+		if route.Marker != "" && !markerOK[route.Category] {
+			if ok, err := afero.Exists(route.Dest, route.Marker); err != nil || !ok {
+				return res, fatal(fmt.Errorf("destination marker %q missing for category %q — is that share mounted?", route.Marker, route.Category))
+			}
+			markerOK[route.Category] = true
+		}
+
+		copied, err := p.copyAndVerify(ctx, in, e, *route)
 		if err != nil {
 			if isFatal(err) {
 				// Destination/index unhealthy: abort before any erase so the card
@@ -180,7 +210,7 @@ func (p *Pipeline) Ingest(ctx context.Context, in Input) (Result, error) {
 		} else {
 			res.Deduped++
 		}
-		res.ByCategory[category]++
+		res.ByCategory[route.Category]++
 		res.Verified = append(res.Verified, e.Path)
 	}
 
@@ -216,54 +246,55 @@ func (p *Pipeline) emitProgress(slot card.Slot, filesDone, totalFiles int, bytes
 // against the index, verifies by reading the landed bytes back, then atomically
 // renames into place. Returns whether a copy was actually written (false =
 // deduped).
-func (p *Pipeline) copyAndVerify(ctx context.Context, in Input, e card.FileEntry, category string) (copied bool, err error) {
-	if err := p.deps.Dest.MkdirAll(tmpDir, 0o755); err != nil {
+func (p *Pipeline) copyAndVerify(ctx context.Context, in Input, e card.FileEntry, route Route) (copied bool, err error) {
+	dest := route.Dest
+	if err := dest.MkdirAll(tmpDir, 0o755); err != nil {
 		return false, fatal(fmt.Errorf("prepare temp dir: %w", err))
 	}
 	tmpPath := path.Join(tmpDir, fmt.Sprintf("ingest-%s-%d", in.Slot, p.seq.Add(1)))
 
 	// Single-pass copy with streaming hash. streamCopy classifies its own errors
 	// (card-side = non-fatal, dest-side = fatal).
-	hash, err := p.streamCopy(in.CardFS, e.Path, tmpPath)
+	hash, err := p.streamCopy(in.CardFS, dest, e.Path, tmpPath)
 	if err != nil {
-		_ = p.deps.Dest.Remove(tmpPath)
+		_ = dest.Remove(tmpPath)
 		return false, err
 	}
 
-	// Dedupe: content already verified in a prior job. Erase from the card
-	// without re-landing it.
+	// Dedupe: content already verified in a prior job (any destination). Erase
+	// from the card without re-landing it.
 	seen, err := p.deps.Store.Seen(ctx, hash)
 	if err != nil {
-		_ = p.deps.Dest.Remove(tmpPath)
+		_ = dest.Remove(tmpPath)
 		return false, fatal(fmt.Errorf("hash index: %w", err))
 	}
 	if seen {
-		_ = p.deps.Dest.Remove(tmpPath)
+		_ = dest.Remove(tmpPath)
 		return false, nil
 	}
 
 	// Verify by hashing the landed bytes off the destination. A successful
 	// write syscall is not sufficient over NFS.
-	landedHash, err := hashFile(p.deps.Dest, tmpPath)
+	landedHash, err := hashFile(dest, tmpPath)
 	if err != nil {
-		_ = p.deps.Dest.Remove(tmpPath)
+		_ = dest.Remove(tmpPath)
 		return false, fatal(fmt.Errorf("read-back: %w", err))
 	}
 	if landedHash != hash {
 		// Card bytes and landed bytes differ: don't erase this file, but keep
 		// going — a single mismatch shouldn't strand the whole card.
-		_ = p.deps.Dest.Remove(tmpPath)
+		_ = dest.Remove(tmpPath)
 		return false, fmt.Errorf("verify mismatch: card=%s dest=%s", hash, landedHash)
 	}
 
-	// Atomically move into place.
-	finalPath := p.destPath(category, p.deps.DateFn(in.CardFS, e), filepath.Base(e.Path))
-	if err := p.deps.Dest.MkdirAll(path.Dir(finalPath), 0o755); err != nil {
-		_ = p.deps.Dest.Remove(tmpPath)
+	// Atomically move into place (temp and final are on the same dest fs).
+	finalPath := destPath(route.Layout, route.Category, p.deps.DateFn(in.CardFS, e), filepath.Base(e.Path))
+	if err := dest.MkdirAll(path.Dir(finalPath), 0o755); err != nil {
+		_ = dest.Remove(tmpPath)
 		return false, fatal(fmt.Errorf("create dest dir: %w", err))
 	}
-	if err := p.deps.Dest.Rename(tmpPath, finalPath); err != nil {
-		_ = p.deps.Dest.Remove(tmpPath)
+	if err := dest.Rename(tmpPath, finalPath); err != nil {
+		_ = dest.Remove(tmpPath)
 		return false, fatal(fmt.Errorf("place file: %w", err))
 	}
 
@@ -273,16 +304,16 @@ func (p *Pipeline) copyAndVerify(ctx context.Context, in Input, e card.FileEntry
 	return true, nil
 }
 
-// streamCopy copies src (on cardFS) to dstPath (on Dest), returning the content
+// streamCopy copies src (on cardFS) to dstPath (on dest), returning the content
 // hash computed during the copy.
-func (p *Pipeline) streamCopy(cardFS afero.Fs, srcPath, dstPath string) (string, error) {
+func (p *Pipeline) streamCopy(cardFS, dest afero.Fs, srcPath, dstPath string) (string, error) {
 	src, err := cardFS.Open(srcPath)
 	if err != nil {
 		return "", fmt.Errorf("open card file: %w", err) // non-fatal: card-side
 	}
 	defer func() { _ = src.Close() }()
 
-	dst, err := p.deps.Dest.Create(dstPath)
+	dst, err := dest.Create(dstPath)
 	if err != nil {
 		return "", fatal(fmt.Errorf("create dest temp: %w", err))
 	}
@@ -313,9 +344,17 @@ func (p *Pipeline) Erase(_ context.Context, cardFS afero.Fs, paths []string) err
 	return errors.Join(errs...)
 }
 
-func (p *Pipeline) destPath(category string, date time.Time, name string) string {
-	rel := strings.ReplaceAll(p.deps.Layout, "{category}", category)
-	rel = strings.ReplaceAll(rel, "{date}", date.Format("2006-01-02"))
+// destPath expands a layout template into a destination-relative file path.
+// Supported tokens: {category}, {year} (2006), {month} (01), {day} (02),
+// {date} (2006-01-02). e.g. layout "{year}/{date}" -> "2026/2026-07-04/NAME".
+func destPath(layout, category string, date time.Time, name string) string {
+	rel := strings.NewReplacer(
+		"{category}", category,
+		"{year}", date.Format("2006"),
+		"{month}", date.Format("01"),
+		"{day}", date.Format("02"),
+		"{date}", date.Format("2006-01-02"),
+	).Replace(layout)
 	return path.Join(rel, name)
 }
 
@@ -348,27 +387,4 @@ func hashFile(fs afero.Fs, p string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%016x", h.Sum64()), nil
-}
-
-// categorize maps a file to a category by extension. An explicit extension match
-// wins; otherwise a category listing "*" catches everything. Returns false when
-// nothing matches (the file is skipped).
-func categorize(p string, cats map[string][]string) (string, bool) {
-	ext := strings.ToLower(filepath.Ext(p))
-	catchAll := ""
-	for cat, exts := range cats {
-		for _, e := range exts {
-			if e == "*" {
-				catchAll = cat
-				continue
-			}
-			if strings.ToLower(e) == ext {
-				return cat, true
-			}
-		}
-	}
-	if catchAll != "" {
-		return catchAll, true
-	}
-	return "", false
 }

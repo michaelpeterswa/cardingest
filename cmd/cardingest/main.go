@@ -105,25 +105,61 @@ func run(ctx context.Context, c *config.Config) error {
 	}
 	defer func() { _ = hashStore.Close() }()
 
-	// Destination (NAS) filesystem. The host mounts the share; we write under it.
-	destPath := policy.Destination.Path
-	if destPath == "" {
-		destPath = "/data/dest"
+	// Destination shares. Each category routes to its own path/layout/marker,
+	// inheriting the top-level destination when unset. A distinct afero.Fs is
+	// created per share path (deduped) so writes and atomic renames stay within
+	// one filesystem. The host mounts the shares; we write under them.
+	defaultDest := policy.Destination.Path
+	if defaultDest == "" {
+		defaultDest = "/data/dest"
 	}
-	if err := os.MkdirAll(destPath, 0o755); err != nil {
-		log.Warn("could not create destination dir (ok if NAS mounts it)",
-			slog.String("path", destPath), slog.String("error", err.Error()))
-	}
-	destFS := afero.NewBasePathFs(afero.NewOsFs(), destPath)
 
-	// Fail-loud if the NAS marker is configured but absent at startup — a strong
-	// hint the share isn't mounted. Not fatal here (it may mount momentarily);
-	// each job re-checks and refuses to erase if it's still missing.
-	if marker := policy.Destination.Marker; marker != "" {
-		if ok, _ := afero.Exists(destFS, marker); !ok {
-			log.Warn("destination marker missing at startup; NAS may not be mounted",
-				slog.String("marker", marker), slog.String("dest", destPath))
+	destFS := map[string]afero.Fs{}
+	getDest := func(path string) afero.Fs {
+		if fs, ok := destFS[path]; ok {
+			return fs
 		}
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			log.Warn("could not create destination dir (ok if the share mounts it)",
+				slog.String("path", path), slog.String("error", err.Error()))
+		}
+		fs := afero.NewBasePathFs(afero.NewOsFs(), path)
+		destFS[path] = fs
+		return fs
+	}
+
+	var routes []pipeline.Route
+	for name, cat := range policy.Categories {
+		dp := cat.Dest
+		if dp == "" {
+			dp = defaultDest
+		}
+		layout := cat.Layout
+		if layout == "" {
+			layout = policy.Destination.Layout
+		}
+		marker := cat.Marker
+		if marker == "" {
+			marker = policy.Destination.Marker
+		}
+		routes = append(routes, pipeline.Route{
+			Category: name, Exts: cat.Ext, Dest: getDest(dp), Layout: layout, Marker: marker,
+		})
+	}
+
+	// Fail-loud if a share's marker is absent at startup — a strong hint it isn't
+	// mounted. Not fatal here (it may mount momentarily); each job re-checks and
+	// refuses to erase against a share whose marker is still missing.
+	warned := map[string]bool{}
+	for _, r := range routes {
+		if r.Marker == "" || warned[r.Category] {
+			continue
+		}
+		if ok, _ := afero.Exists(r.Dest, r.Marker); !ok {
+			log.Warn("destination marker missing at startup; share may not be mounted",
+				slog.String("category", r.Category), slog.String("marker", r.Marker))
+		}
+		warned[r.Category] = true
 	}
 
 	// Compile the ordered keep/skip rules from the policy config.
@@ -137,13 +173,10 @@ func run(ctx context.Context, c *config.Config) error {
 	hub := events.NewHub()
 
 	pipe := pipeline.New(pipeline.Deps{
-		Dest:          destFS,
-		Store:         hashStore,
-		Rules:         ruleEngine,
-		Categories:    policy.Categories,
-		Layout:        policy.Destination.Layout,
-		RequireMarker: policy.Destination.Marker,
-		DateFn:        func(fs afero.Fs, f card.FileEntry) time.Time { t, _ := exifdate.DateOf(fs, f); return t },
+		Routes: routes,
+		Store:  hashStore,
+		Rules:  ruleEngine,
+		DateFn: func(fs afero.Fs, f card.FileEntry) time.Time { t, _ := exifdate.DateOf(fs, f); return t },
 		OnProgress: func(p pipeline.Progress) {
 			hub.Publish(events.Event{Type: "progress", Slot: p.Slot, Data: p})
 		},

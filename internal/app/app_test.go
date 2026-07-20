@@ -125,12 +125,10 @@ func TestIngestMockEndToEnd(t *testing.T) {
 	defer func() { _ = sqlite.Close() }()
 
 	pipe := pipeline.New(pipeline.Deps{
-		Dest:       dest,
-		Store:      sqlite,
-		Categories: map[string][]string{"photos": {".arw", ".jpg"}},
-		Layout:     "{category}/{date}",
-		DateFn:     func(afero.Fs, card.FileEntry) time.Time { return time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC) },
-		Log:        log,
+		Routes: []pipeline.Route{{Category: "photos", Exts: []string{".arw", ".jpg"}, Dest: dest, Layout: "{category}/{date}"}},
+		Store:  sqlite,
+		DateFn: func(afero.Fs, card.FileEntry) time.Time { return time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC) },
+		Log:    log,
 	})
 
 	det, _ := detect.New(detect.Config{Mock: true, Now: time.Now}, log)

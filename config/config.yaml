@@ -3,17 +3,26 @@
 # Bootstrap settings (READER_MODE, paths, ports) come from env, not here.
 
 destination:
-  path: /data/dest              # bind-mounted NAS share
-  layout: "{category}/{date}"   # -> photos/2026-07-18/DSC01234.ARW
+  # Default share for categories that don't set their own dest. Layout tokens:
+  # {category} {year} {month} {day} {date}(=YYYY-MM-DD).
+  path: /data/dest
+  layout: "{category}/{year}/{date}"   # e.g. jpeg/2026/2026-07-04/…
   date_source: exif_then_mtime
-  # Sentinel that must exist on the NAS for ingest to proceed. Create it once:
-  #   touch /mnt/nas/ingest/.cardingest-ok   (see deploy/DEPLOY.md)
+  # Sentinel that must exist on each share for ingest to proceed. Create it
+  # once per share (touch it on the mounted share). See deploy/DEPLOY.md.
   marker: .cardingest-ok
 
+# Per-category routing. A category may override dest/layout/marker; otherwise it
+# inherits the destination above. RAW goes to the Lightroom share in Lightroom's
+# nested date layout; everything else lands on the default share.
 categories:
-  photos: [".arw", ".dng", ".jpg", ".jpeg"]
+  raw:
+    ext: [".arw", ".dng", ".cr2", ".cr3", ".nef"]
+    dest: /data/lightroom      # bind-mounted Lightroom SMB share
+    layout: "{year}/{date}"    # -> lightroom/2026/2026-07-04/GUH09283.ARW
+  jpeg: [".jpg", ".jpeg"]      # -> /data/dest/jpeg/2026/2026-07-04/…
   video: [".mp4", ".mov"]
-  other: ["*"]                  # catch-all; omit to skip unknowns
+  other: ["*"]                 # catch-all; omit to skip unknowns
 
 rules:                          # ordered, first match wins
   - name: skip thumbnails
@@ -27,7 +36,16 @@ rules:                          # ordered, first match wins
     action: skip
   - name: keep media
     match:
-      ext: [".arw", ".dng", ".jpg", ".mp4", ".mov"]
+      ext:
+        - ".arw"
+        - ".dng"
+        - ".cr2"
+        - ".cr3"
+        - ".nef"
+        - ".jpg"
+        - ".jpeg"
+        - ".mp4"
+        - ".mov"
     action: keep
   - default: skip
 

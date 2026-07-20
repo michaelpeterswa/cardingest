@@ -81,7 +81,7 @@ func TestConfigRoundTripAPI(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("put valid: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := cs.Get(); len(got.Rules) != 2 || got.Categories["photos"][0] != ".arw" {
+	if got := cs.Get(); len(got.Rules) != 2 || got.Categories["photos"].Ext[0] != ".arw" {
 		t.Fatalf("config not saved: %+v", got)
 	}
 

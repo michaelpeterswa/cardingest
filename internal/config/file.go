@@ -17,11 +17,33 @@ import (
 // rules editor can load and save it without losing fields.
 type File struct {
 	Destination Destination         `yaml:"destination"`
-	Categories  map[string][]string `yaml:"categories"`
+	Categories  map[string]Category `yaml:"categories"`
 	Rules       []Rule              `yaml:"rules"`
 	Card        CardPolicy          `yaml:"card"`
 	Reader      Reader              `yaml:"reader"`
 	Notify      []Notifier          `yaml:"notify"`
+}
+
+// Category maps a set of extensions to where and how their files land. Dest,
+// Layout, and Marker are optional and inherit from the top-level destination
+// when empty — so a category can override just the share it goes to.
+//
+// The YAML also accepts the shorthand `name: [".ext", ...]`, equivalent to
+// `name: {ext: [".ext", ...]}`.
+type Category struct {
+	Ext    []string `yaml:"ext"`
+	Dest   string   `yaml:"dest,omitempty"`   // override destination root
+	Layout string   `yaml:"layout,omitempty"` // override path layout
+	Marker string   `yaml:"marker,omitempty"` // override NAS-mounted sentinel
+}
+
+// UnmarshalYAML accepts either a bare extension list or the full struct form.
+func (c *Category) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.SequenceNode {
+		return value.Decode(&c.Ext)
+	}
+	type plain Category
+	return value.Decode((*plain)(c))
 }
 
 type Destination struct {
